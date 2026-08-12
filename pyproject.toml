@@ -1,7 +1,7 @@
 [project]
 name = "vep-comparisons"
 version = "0.1.0"
-description = "Add your description here"
+description = "Workflows for curating and comparing variant effect predictions"
 readme = "README.md"
 authors = [
     { name = "Robert Calef", email = "robert.calef@gmail.com" }
@@ -18,7 +18,12 @@ dependencies = [
 ]
 
 [project.scripts]
-vep-comparisons = "vep_comparisons:main"
+curate-vep-variants = "vep_comparisons.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]
