@@ -72,7 +72,14 @@ def read_vep(path: Path) -> pl.DataFrame:
     )
 
 
-def filter_and_select_annotations(vep: pl.DataFrame) -> pl.DataFrame:
+def filter_and_select_annotations(
+    vep: pl.DataFrame,
+    # Optional additional DataFrame specifying which gene
+    # each variant should affect. If provided, only keep
+    # rows where the variant's affected gene is the targeted
+    # one.
+    target_genes: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     annotations = (
         vep
         .select(VEP_COLUMNS)
@@ -88,6 +95,25 @@ def filter_and_select_annotations(vep: pl.DataFrame) -> pl.DataFrame:
         .drop("consequence_terms")
     )
 
+    if target_genes is not None:
+        len_before = len(annotations)
+        # This join only keeps rows where the (variant, gene) pair from
+        # VEP (indicating which gene the variant overlaps) matches the
+        # (variant, target_gene) pair provided.
+        annotations = (
+            annotations
+            .join(
+                target_genes,
+                left_on=["variant", "gene"],
+                right_on=["variant", "target_gene"],
+                how="inner",
+            )
+        )
+        print(
+            f"Kept {len(annotations)} / {len_before} variants affecting expected target gene."
+        )
+
+
     eligible_variants = (
         annotations
         .group_by("variant")
@@ -100,6 +126,7 @@ def filter_and_select_annotations(vep: pl.DataFrame) -> pl.DataFrame:
         .filter(pl.col("has_protein_coding") != pl.col("has_lncrna"))
         .select("variant")
     )
+
 
     return (
         annotations
@@ -228,6 +255,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--vep-output", required=True, type=Path)
     parser.add_argument("--selected-variants", required=True, type=Path)
+    parser.add_argument(
+        "--has-target-genes",
+        required=False,
+        default=False,
+        action="store_true",
+    )
     parser.add_argument("--output-prefix", required=True, type=Path)
     parser.add_argument("--low-pip-fraction", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
@@ -242,14 +275,26 @@ def main(argv: list[str] | None = None) -> None:
     _ = selected.select(REQUIRED_SELECTED_COLUMNS)
 
     vep = read_vep(args.vep_output)
-    annotations = filter_and_select_annotations(vep)
+
+    if args.has_target_genes:
+        target_genes = selected.select("variant", "target_gene")
+    else:
+        target_genes = None
+    annotations = filter_and_select_annotations(
+        vep,
+        target_genes=target_genes,
+    )
     full = sort_variants(
         selected
         .join(
             annotations,
             on="variant",
             how="inner",
-            validate="1:m",
+            # If we're filtering to target genes, then some variants may not
+            # be present in the filtered `annotations` due to not
+            # overlapping their target gene. Otherwise, we expect
+            # each variant to be present once in `selected`.
+            validate="m:m" if  args.has_target_genes else "1:m",
             maintain_order="left",
         )
     )

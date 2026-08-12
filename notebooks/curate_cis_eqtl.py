@@ -112,7 +112,7 @@ def _(all_variants, pl):
             afc=pl.col("afc").list.get(pl.col("selected_idx")),
             all_tissues=pl.col("tissue").list.join(","),
             tissue=pl.col("tissue").list.get(pl.col("selected_idx")),
-
+            target_gene=pl.col("phenotype_id").str.split(".").list[0],
         )
         .filter(
             (pl.col("pip") >= high_thresh) | (pl.col("pip") <= low_thresh),
@@ -130,11 +130,8 @@ def _(all_variants, pl):
             chromosome_number=pl.col("chromosome").str.extract(r"chr([\d]+)"),
         )
         .sort(["chromosome_number", "start"])
-        .drop("selected_idx", "parts", "cs_id", "chromosome_number")
-        .rename({
-            "variant_id": "variant",
-            "phenotype_id": "target_gene",
-        })
+        .drop("selected_idx", "parts", "cs_id", "chromosome_number", "phenotype_id")
+        .rename({"variant_id": "variant"})
         .select(
             "variant",
             "chromosome",
@@ -186,6 +183,7 @@ def _(deduped_variants, pl):
             allele=pl.col("ref") + "/" + pl.col("alt"),
             strand=pl.lit("+"),
         )
+        .unique("variant", maintain_order=True)
         .select(
             "chromosome",
             (pl.col("start") + 1).alias("start"),
@@ -195,6 +193,7 @@ def _(deduped_variants, pl):
             "variant",
         )
     )
+    print(vep_variants.shape)
     vep_variants.head()
     return (vep_variants,)
 
@@ -209,6 +208,40 @@ def _(data_dir, vep_variants):
             include_header=False,
             compression="gzip",
         )
+    )
+    return
+
+
+@app.cell
+def _(data_dir, pl):
+    vep_filtered = (
+        pl.read_csv(data_dir / "final_variants.tsv.gz", separator="\t", null_values="-")
+    )
+    vep_filtered.head()
+    return (vep_filtered,)
+
+
+@app.cell
+def _(pl, vep_filtered):
+    (
+        vep_filtered
+        .filter(pl.col("biotype") == "protein_coding")
+        .get_column("consequence")
+        .value_counts(sort=True)
+    )
+    return
+
+
+@app.cell
+def _(pl, vep_filtered):
+    (
+        vep_filtered
+        .filter(
+            pl.col("biotype") == "protein_coding",
+            pl.col("protein_position").is_null()
+        )
+        .get_column("consequence")
+        .value_counts(sort=True)
     )
     return
 
