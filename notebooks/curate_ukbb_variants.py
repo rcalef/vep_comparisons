@@ -8,10 +8,9 @@ app = marimo.App()
 def _():
     from pathlib import Path
 
-    import marimo as mo
     import polars as pl
 
-    return Path, mo, pl
+    return Path, pl
 
 
 @app.cell
