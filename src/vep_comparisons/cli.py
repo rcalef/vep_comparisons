@@ -278,8 +278,24 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.has_target_genes:
         target_genes = selected.select("variant", "target_gene")
+        # If we're filtering to target genes, then some variants may not
+        # be present in the filtered `annotations` due to not
+        # overlapping their target gene. Otherwise, we expect
+        # each variant to be present once in `selected`.
+        join_args = {
+            "left_on": ["variant", "target_gene"],
+            "right_on": ["variant", "gene"],
+            "validate": "m:m",
+            "coalesce": False,
+        }
     else:
         target_genes = None
+        join_args = {
+            "on": "variant",
+            "validate": "1:m",
+            "coalesce": True,
+        }
+
     annotations = filter_and_select_annotations(
         vep,
         target_genes=target_genes,
@@ -288,14 +304,9 @@ def main(argv: list[str] | None = None) -> None:
         selected
         .join(
             annotations,
-            on="variant",
             how="inner",
-            # If we're filtering to target genes, then some variants may not
-            # be present in the filtered `annotations` due to not
-            # overlapping their target gene. Otherwise, we expect
-            # each variant to be present once in `selected`.
-            validate="m:m" if  args.has_target_genes else "1:m",
             maintain_order="left",
+            **join_args,
         )
     )
     downsampled = sort_variants(

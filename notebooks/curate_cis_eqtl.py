@@ -29,12 +29,6 @@ def _(Path):
 
 
 @app.cell
-def _(paths):
-    paths[0]
-    return
-
-
-@app.cell
 def _(paths, pl):
     keep_cols = [
         "phenotype_id",
@@ -44,24 +38,56 @@ def _(paths, pl):
         "afc",
     ]
 
-    all_variants = []
-    for path in paths:
-        tissue_name = path.name.split(".")[0]
-        all_variants.append(
-            pl.read_parquet(path, columns=keep_cols)
-            # Filter to the non-null allelic fold-change rows,
-            # which corresponds to keeping the maximum PIP variant
-            # per credible set (with some genes having multiple credible sets)
-            .filter(pl.col("afc").is_not_null())
-            .with_columns(tissue=pl.lit(tissue_name))
-        )
     all_variants = (
-        pl.concat(all_variants, how="vertical")
-        .group_by("phenotype_id", "variant_id")
-        .agg(pl.all().implode())
-        .with_columns(
-            num_tissues=pl.col("tissue").list.len()
+        pl.concat(
+            [
+                pl.scan_parquet(path)
+                .select(keep_cols)
+                # Retain every credible-set member. In particular, variants without
+                # an AFC must survive until the PIP thresholds are applied below so
+                # that low-PIP members remain eligible as negatives.
+                .with_columns(tissue=pl.lit(path.name.split(".")[0]))
+                for path in paths
+            ],
+            how="vertical",
         )
+        .group_by("phenotype_id", "variant_id")
+        # Select the maximum-PIP observation for each gene/variant pair while also
+        # retaining its best fine-mapped observation, if one exists. The latter
+        # preserves the previous positive set; the former lets the negative cutoff
+        # consider every credible-set membership. Aggregating directly avoids
+        # materializing list columns for all input rows.
+        .agg(
+            pl.col("pip").max(),
+            pl.col("cs_id").sort_by("pip", descending=True).first(),
+            pl.col("afc").sort_by("pip", descending=True).first(),
+            pl.col("tissue").sort_by("pip", descending=True).first(),
+            pl.col("pip")
+            .filter(pl.col("afc").is_not_null())
+            .max()
+            .alias("fine_mapped_pip"),
+            pl.col("afc")
+            .filter(pl.col("afc").is_not_null())
+            .sort_by(
+                pl.col("pip").filter(pl.col("afc").is_not_null()),
+                descending=True,
+            )
+            .first()
+            .alias("fine_mapped_afc"),
+            pl.col("tissue")
+            .filter(pl.col("afc").is_not_null())
+            .sort_by(
+                pl.col("pip").filter(pl.col("afc").is_not_null()),
+                descending=True,
+            )
+            .first()
+            .alias("fine_mapped_tissue"),
+            pl.col("tissue").unique(maintain_order=True).alias("all_tissues"),
+        )
+        .with_columns(
+            num_tissues=pl.col("all_tissues").list.len()
+        )
+        .collect()
     )
     all_variants.shape
     return (all_variants,)
@@ -70,12 +96,6 @@ def _(paths, pl):
 @app.cell
 def _(all_variants):
     all_variants.head()
-    return
-
-
-@app.cell
-def _(all_variants, pl):
-    all_variants.filter(pl.col("num_tissues") > 1)
     return
 
 
@@ -101,37 +121,66 @@ def _(all_variants, pl):
         all_variants
         .with_columns(
             parts=pl.col("variant_id").str.split("_"),
-            selected_idx=pl.col("pip").list.arg_max(),
         )
         .with_columns(
             chromosome=pl.col("parts").list.get(0),
             end=pl.col("parts").list.get(1).cast(pl.UInt32),
             ref=pl.col("parts").list.get(2),
             alt=pl.col("parts").list.get(3),
-            pip=pl.col("pip").list.get(pl.col("selected_idx")),
-            afc=pl.col("afc").list.get(pl.col("selected_idx")),
-            all_tissues=pl.col("tissue").list.join(","),
-            tissue=pl.col("tissue").list.get(pl.col("selected_idx")),
+            all_tissues=pl.col("all_tissues").list.join(","),
             target_gene=pl.col("phenotype_id").str.split(".").list[0],
         )
+        .with_columns(
+            is_high_pip=pl.col("fine_mapped_pip") >= high_thresh,
+            is_low_pip=pl.col("pip") <= low_thresh,
+            variant=pl.col("chromosome") + ":" + pl.col("end").cast(pl.String) + ":" + pl.col("ref") + ":" + pl.col("alt"),
+        )
         .filter(
-            (pl.col("pip") >= high_thresh) | (pl.col("pip") <= low_thresh),
+            # Preserve the existing positive definition while allowing non-fine-
+            # mapped credible-set members to enter the low-PIP negative pool.
+            pl.col("is_high_pip") | pl.col("is_low_pip"),
             pl.col("ref").str.len_chars() == 1,
             pl.col("alt").str.len_chars() == 1,
             pl.col("chromosome").str.contains(r"chr([\d]+)")
         )
         .with_columns(
             start=pl.col("end")-1,
+            pip=(
+                pl.when(pl.col("is_high_pip"))
+                .then(pl.col("fine_mapped_pip"))
+                .otherwise(pl.col("pip"))
+            ),
+            afc=(
+                pl.when(pl.col("is_high_pip"))
+                .then(pl.col("fine_mapped_afc"))
+                .otherwise(pl.col("afc"))
+            ),
+            tissue=(
+                pl.when(pl.col("is_high_pip"))
+                .then(pl.col("fine_mapped_tissue"))
+                .otherwise(pl.col("tissue"))
+            ),
             label=(
-                pl.when(pl.col("pip") >= high_thresh)
+                pl.when(pl.col("is_high_pip"))
                 .then(pl.lit("high_pip"))
                 .otherwise(pl.lit("low_pip"))
             ),
             chromosome_number=pl.col("chromosome").str.extract(r"chr([\d]+)"),
+
         )
         .sort(["chromosome_number", "start"])
-        .drop("selected_idx", "parts", "cs_id", "chromosome_number", "phenotype_id")
-        .rename({"variant_id": "variant"})
+        .drop(
+            "parts",
+            "cs_id",
+            "chromosome_number",
+            "phenotype_id",
+            "fine_mapped_pip",
+            "fine_mapped_afc",
+            "fine_mapped_tissue",
+            "is_high_pip",
+            "is_low_pip",
+            "variant_id",
+        )
         .select(
             "variant",
             "chromosome",
