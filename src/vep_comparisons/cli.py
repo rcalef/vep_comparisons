@@ -173,26 +173,29 @@ def sort_variants(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def downsample(
-    full: pl.DataFrame, *, low_pip_fraction: float, seed: int
+    full: pl.DataFrame,
+    *,
+    neg_labels: list[str],
+    neg_fraction: float,
+    seed: int,
 ) -> pl.DataFrame:
-    low_pip_variants = (
+    negative_variants = (
         full
-        .filter(pl.col("label") == "low_pip")
+        .filter(pl.col("label").is_in(neg_labels))
         .select("variant", "biotype")
         .unique(maintain_order=True)
         .sort(["biotype", "variant"])
     )
 
     sampled_ids: list[pl.DataFrame] = []
-    biotype_strata = (
-        low_pip_variants
-        .partition_by("biotype", maintain_order=True)
+    biotype_strata = negative_variants.partition_by(
+        "biotype", maintain_order=True
     )
     for stratum in biotype_strata:
         sampled_ids.append(
             stratum
             .sample(
-                fraction=low_pip_fraction,
+                fraction=neg_fraction,
                 with_replacement=False,
                 shuffle=True,
                 seed=seed,
@@ -200,9 +203,9 @@ def downsample(
             .select("variant")
         )
 
-    sampled_low_pip = (
+    sampled_negative = (
         full
-        .filter(pl.col("label") == "low_pip")
+        .filter(pl.col("label").is_in(neg_labels))
         .join(
             pl.concat(sampled_ids)
             if sampled_ids
@@ -211,11 +214,8 @@ def downsample(
             how="semi",
         )
     )
-    high_pip = (
-        full
-        .filter(pl.col("label") == "high_pip")
-    )
-    return pl.concat([high_pip, sampled_low_pip])
+    positive = full.filter(~pl.col("label").is_in(neg_labels))
+    return pl.concat([positive, sampled_negative])
 
 
 def report(
@@ -262,9 +262,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
     )
     parser.add_argument("--output-prefix", required=True, type=Path)
-    parser.add_argument("--low-pip-fraction", type=float, default=0.1)
+    parser.add_argument(
+        "--neg-labels",
+        type=str,
+        default=None,
+        action="append",
+        metavar="LABEL",
+        help=(
+            "label to downsample; repeat for multiple negative labels "
+            "(default: low_pip)"
+        ),
+    )
+    parser.add_argument(
+        "--neg-fraction",
+        type=float,
+        default=0.1,
+        help="fraction of unique negative variants retained per biotype (default: 0.1)",
+    )
     parser.add_argument("--seed", type=int, default=42)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.neg_labels is None:
+        args.neg_labels = ["low_pip"]
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -300,17 +319,25 @@ def main(argv: list[str] | None = None) -> None:
         vep,
         target_genes=target_genes,
     )
-    full = sort_variants(
-        selected
-        .join(
-            annotations,
-            how="inner",
-            maintain_order="left",
-            **join_args,
-        )
+    joined = selected.join(
+        annotations,
+        how="inner",
+        maintain_order="left",
+        **join_args,
     )
+    if args.has_target_genes:
+        # `coalesce=False` preserves the VEP `gene` key, which we need in the
+        # output, but it also retains a duplicate right-hand `variant` key.
+        joined = joined.drop("variant_right")
+
+    full = sort_variants(joined)
     downsampled = sort_variants(
-        downsample(full, low_pip_fraction=args.low_pip_fraction, seed=args.seed)
+        downsample(
+            full,
+            neg_labels=args.neg_labels,
+            neg_fraction=args.neg_fraction,
+            seed=args.seed,
+        )
     )
 
     full_path = Path(f"{args.output_prefix}.tsv.gz")

@@ -10,6 +10,7 @@ import polars as pl
 from vep_comparisons.cli import (
     downsample,
     filter_and_select_annotations,
+    parse_args,
     read_vep,
 )
 
@@ -168,33 +169,36 @@ def test_downsample_is_variant_level_stratified_and_reproducible() -> None:
                     {
                         "variant": f"{biotype}-{index}",
                         "biotype": biotype,
-                        "label": "low_pip",
+                        "label": "Benign" if index % 2 == 0 else "Likely_benign",
                         "gene": gene,
                     }
                 )
     rows.extend(
         [
             {
-                "variant": "high",
+                "variant": label,
                 "biotype": "protein_coding",
-                "label": "high_pip",
+                "label": label,
                 "gene": gene,
             }
+            for label in ("Pathogenic", "Likely_pathogenic")
             for gene in ("A", "B")
         ]
     )
     full = pl.DataFrame(rows)
 
-    first = downsample(full, low_pip_fraction=0.3, seed=42)
-    second = downsample(full, low_pip_fraction=0.3, seed=42)
+    negative_labels = ["Benign", "Likely_benign"]
+    first = downsample(
+        full, neg_labels=negative_labels, neg_fraction=0.3, seed=42
+    )
+    second = downsample(
+        full, neg_labels=negative_labels, neg_fraction=0.3, seed=42
+    )
 
     assert first.equals(second)
-    low = (
-        first
-        .filter(pl.col("label") == "low_pip")
-    )
+    negative = first.filter(pl.col("label").is_in(negative_labels))
     sampled_per_biotype = (
-        low
+        negative
         .select("variant", "biotype")
         .unique()
         .group_by("biotype")
@@ -202,18 +206,39 @@ def test_downsample_is_variant_level_stratified_and_reproducible() -> None:
         .get_column("len")
     )
     annotations_per_variant = (
-        low
+        negative
         .group_by("variant")
         .len()
         .get_column("len")
     )
-    retained_high_pip = (
-        first
-        .filter(pl.col("variant") == "high")
+    retained_positive_labels = set(
+        first.filter(~pl.col("label").is_in(negative_labels)).get_column("label")
     )
     assert (sampled_per_biotype == 3).all()
     assert (annotations_per_variant == 2).all()
-    assert retained_high_pip.height == 2
+    assert retained_positive_labels == {"Pathogenic", "Likely_pathogenic"}
+
+
+def test_negative_label_cli_defaults_only_when_not_supplied() -> None:
+    required = [
+        "--vep-output",
+        "vep.tsv.gz",
+        "--selected-variants",
+        "selected.tsv.gz",
+        "--output-prefix",
+        "final",
+    ]
+
+    assert parse_args(required).neg_labels == ["low_pip"]
+    assert parse_args(
+        required
+        + [
+            "--neg-labels",
+            "Benign",
+            "--neg-labels",
+            "Likely_benign",
+        ]
+    ).neg_labels == ["Benign", "Likely_benign"]
 
 
 def test_cli_end_to_end_preserves_metadata_and_writes_gzip(
@@ -233,7 +258,7 @@ def test_cli_end_to_end_preserves_metadata_and_writes_gzip(
                     "ref": "A",
                     "alt": "T",
                     "pip": 0.01,
-                    "label": "low_pip",
+                    "label": "Benign" if index % 2 == 0 else "Likely_benign",
                     "cohort": "synthetic",
                 }
             )
@@ -242,22 +267,38 @@ def test_cli_end_to_end_preserves_metadata_and_writes_gzip(
             )
     selected_rows.append(
         {
-            "variant": "high",
+            "variant": "pathogenic",
             "chromosome": "chr2",
             "start": 20,
             "end": 21,
             "ref": "C",
             "alt": "G",
             "pip": 0.99,
-            "label": "high_pip",
+            "label": "Pathogenic",
             "cohort": "synthetic",
         }
     )
     annotations.extend(
         [
-            _annotation("high", "HIGH1", "ENST_HIGH1"),
-            _annotation("high", "HIGH2", "ENST_HIGH2"),
+            _annotation("pathogenic", "HIGH1", "ENST_HIGH1"),
+            _annotation("pathogenic", "HIGH2", "ENST_HIGH2"),
         ]
+    )
+    selected_rows.append(
+        {
+            "variant": "likely-pathogenic",
+            "chromosome": "chr2",
+            "start": 21,
+            "end": 22,
+            "ref": "C",
+            "alt": "T",
+            "pip": None,
+            "label": "Likely_pathogenic",
+            "cohort": "synthetic",
+        }
+    )
+    annotations.append(
+        _annotation("likely-pathogenic", "HIGH3", "ENST_HIGH3")
     )
 
     selected_path = tmp_path / "selected.tsv.gz"
@@ -281,7 +322,11 @@ def test_cli_end_to_end_preserves_metadata_and_writes_gzip(
             str(selected_path),
             "--output-prefix",
             str(prefix),
-            "--low-pip-fraction",
+            "--neg-labels",
+            "Benign",
+            "--neg-labels",
+            "Likely_benign",
+            "--neg-fraction",
             "0.5",
             "--seed",
             "7",
@@ -316,18 +361,75 @@ def test_cli_end_to_end_preserves_metadata_and_writes_gzip(
         .unique()
         .to_list()
     )
-    retained_high_pip = (
-        full
-        .filter(pl.col("variant") == "high")
+    retained_positive = (
+        downsampled
+        .filter(pl.col("label").is_in(["Pathogenic", "Likely_pathogenic"]))
     )
-    assert full.height == 10
-    assert full_variant_count == 9
-    assert downsampled.height == 6
-    assert downsampled_variant_count == 5
+    assert full.height == 11
+    assert full_variant_count == 10
+    assert downsampled.height == 7
+    assert downsampled_variant_count == 6
     assert full.columns[:9] == list(selected_rows[0])
     assert cohorts == ["synthetic"]
-    assert retained_high_pip.height == 2
-    assert "input: 10 rows, 9 variants" in completed.stdout
-    assert "filtered for protein-coding and lncRNA: 10 rows, 9 variants" in completed.stdout
-    assert "full: 10 rows, 9 variants" in completed.stdout
-    assert "downsampled: 6 rows, 5 variants" in completed.stdout
+    assert set(retained_positive.get_column("label")) == {
+        "Pathogenic",
+        "Likely_pathogenic",
+    }
+    assert retained_positive.height == 3
+    assert "input: 11 rows, 10 variants" in completed.stdout
+    assert "filtered for protein-coding and lncRNA: 11 rows, 10 variants" in completed.stdout
+    assert "full: 11 rows, 10 variants" in completed.stdout
+    assert "downsampled: 7 rows, 6 variants" in completed.stdout
+
+
+def test_target_gene_join_drops_redundant_right_variant_key(
+    tmp_path: Path,
+) -> None:
+    selected_path = tmp_path / "selected.tsv.gz"
+    vep_path = tmp_path / "vep.txt.gz"
+    prefix = tmp_path / "final_variants"
+    pl.DataFrame(
+        [
+            {
+                "variant": "v1",
+                "chromosome": "chr1",
+                "start": 0,
+                "end": 1,
+                "ref": "A",
+                "alt": "T",
+                "pip": 0.99,
+                "label": "high_pip",
+                "target_gene": "G1",
+            }
+        ]
+    ).write_csv(selected_path, separator="\t", compression="gzip")
+    _write_vep(
+        vep_path,
+        [
+            _annotation("v1", "G1", "ENST1"),
+            _annotation("v1", "G2", "ENST2"),
+        ],
+    )
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "vep_comparisons.cli",
+            "--vep-output",
+            str(vep_path),
+            "--selected-variants",
+            str(selected_path),
+            "--has-target-genes",
+            "--output-prefix",
+            str(prefix),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = pl.read_csv(f"{prefix}.tsv.gz", separator="\t")
+    assert result.get_column("gene").to_list() == ["G1"]
+    assert result.get_column("target_gene").to_list() == ["G1"]
+    assert "variant_right" not in result.columns

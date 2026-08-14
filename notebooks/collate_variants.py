@@ -26,8 +26,15 @@ def _(Path):
         / "final_UKBB_94traits_release1.hg38.selected_transcript.txt.gz",
         "multisusie": data_dir / "multisusie" / "final_variants.tsv.gz",
         "eqtl": data_dir / "cis_eqtl" / "final_variants.tsv.gz",
+        "clinvar": data_dir / "clinvar" / "final_variants.tsv.gz",
     }
-    return (data_paths,)
+    positive_labels = {
+        "ukbb": ["high_pip"],
+        "multisusie": ["high_pip"],
+        "eqtl": ["high_pip"],
+        "clinvar": ["Pathogenic", "Likely_pathogenic"],
+    }
+    return data_dir, data_paths, positive_labels
 
 
 @app.cell
@@ -103,12 +110,31 @@ def _(
 ):
     # These datasets contain every retained VEP gene for each variant. The eQTL
     # data are intentionally restricted to the gene tested by the association.
-    complete_gene_coverage = {"ukbb", "multisusie"}
+    complete_gene_coverage = {"ukbb", "multisusie", "clinvar"}
+    autosomes = [f"chr{chromosome}" for chromosome in range(1, 23)]
 
     datasets = {}
     frames_to_collate = []
     for name, path in data_paths.items():
         variants = read_filtered_vep(path)
+        if name == "eqtl" and "variant_right" in variants.columns:
+            mismatched_join_keys = variants.filter(
+                ~pl.col("variant").eq_missing(pl.col("variant_right"))
+            )
+            if not mismatched_join_keys.is_empty():
+                raise ValueError(
+                    "eQTL variant_right contains values that differ from variant: "
+                    f"{mismatched_join_keys.head()}"
+                )
+            variants = variants.drop("variant_right")
+        if name == "clinvar":
+            excluded = variants.filter(~pl.col("chromosome").is_in(autosomes))
+            variants = variants.filter(pl.col("chromosome").is_in(autosomes))
+            print(
+                "Excluded "
+                f"{excluded.get_column('variant').n_unique():,} non-autosomal "
+                f"ClinVar variants / {excluded.height:,} gene-level rows"
+            )
         if variants.select(pl.struct(id_cols).is_duplicated().any()).item():
             raise ValueError(f"{name!r} has duplicate (variant, gene) rows")
 
@@ -212,6 +238,14 @@ def _(
             *[cs.starts_with(name) for name in data_paths],
         )
     )
+    invalid_chromosomes = curr_variants.filter(
+        ~pl.col("chromosome").is_in(autosomes)
+    )
+    if not invalid_chromosomes.is_empty():
+        raise ValueError(
+            "Collated output contains non-autosomal variants: "
+            f"{invalid_chromosomes.get_column('chromosome').unique().to_list()}"
+        )
     validation = pl.DataFrame(validation_rows)
     return curr_variants, validation
 
@@ -247,12 +281,27 @@ def _(curr_variants):
 
 
 @app.cell
-def _(cs, curr_variants, data_paths, pl):
+def _(curr_variants, data_dir):
+    collated_path = data_dir / "collated_variants.tsv.gz"
+    curr_variants.write_csv(
+        collated_path,
+        separator="\t",
+        compression="gzip",
+        null_value="-",
+    )
+    collated_path
+    return (collated_path,)
+
+
+@app.cell
+def _(cs, curr_variants, data_paths, pl, positive_labels):
     overlap_pos_only = (
         curr_variants
         .with_columns(
             **{
-                f"{name}_present": (pl.col(f"{name}_label").is_not_null() & (pl.col(f"{name}_label") == "high_pip"))
+                f"{name}_present": pl.col(f"{name}_label").is_in(
+                    positive_labels[name]
+                ).fill_null(False)
                 for name in data_paths
             }
         )
@@ -275,12 +324,5 @@ def _(curr_variants, pl):
         .value_counts()
     )
     return
-
-
-@app.cell
-def _():
-    return
-
-
 if __name__ == "__main__":
     app.run()
