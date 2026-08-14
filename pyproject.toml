@@ -8,17 +8,23 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "esm>=3.2.3",
     "marimo>=0.23.16",
     "matplotlib>=3.11.1",
     "numpy>=2.5.1",
     "pandas>=3.0.5",
     "polars>=1.43.2",
+    "pybigwig>=0.3.25",
     "pysam>=0.24.0",
     "seaborn>=0.13.2",
+    "torch>=2.6.0",
+    "tqdm>=4.67.1",
+    "transformers>=4.48.1",
 ]
 
 [project.scripts]
 curate-vep-variants = "vep_comparisons.cli:main"
+score-protein-variants = "vep_comparisons.score_variants_cli:main"
 
 [dependency-groups]
 dev = [
