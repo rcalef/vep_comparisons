@@ -93,6 +93,7 @@ score-protein-variants \
   --variants final_variants.tsv.gz \
   --sequences gencode.v49.pc_translations.fa.gz \
   --model esmc-300m \
+  --batch-size 1 \
   --output esmc_300m_scores
 ```
 
@@ -112,4 +113,5 @@ the alternate residue.
 The command atomically writes `<output>.tsv.gz` with columns `variant`, `gene`,
 `feature`, `protein_position`, `amino_acids`, `model`, and `score`. It is
 single-process and non-resumable. `float32` is the default; use `--dtype` to
-explicitly request `bfloat16` or `float16`.
+explicitly request `bfloat16` or `float16`. `--batch-size` controls the number
+of masked protein positions evaluated per forward pass and defaults to `1`.

@@ -43,7 +43,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="float32",
     )
     parser.add_argument("--max-sequence-length", type=int)
-    parser.add_argument("--max-tokens-per-batch", type=int, default=4096)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="number of masked protein positions per model forward pass",
+    )
     args = parser.parse_args(argv)
     if args.model_dir is None:
         parser.error("--model-dir is required when MAGNETON_MODEL_DIR is not set")
@@ -72,7 +77,7 @@ def run_cli(
             device=args.device,
             dtype=args.dtype,
             max_sequence_length=args.max_sequence_length,
-            max_tokens_per_batch=args.max_tokens_per_batch,
+            batch_size=args.batch_size,
             **kwargs,
         )
     except InputValidationError as error:

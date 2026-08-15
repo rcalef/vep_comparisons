@@ -70,11 +70,6 @@ class PositionRequest:
     def key(self) -> tuple[str, int]:
         return (self.transcript, self.position)
 
-    @property
-    def token_count(self) -> int:
-        # ESM-C and SaProt both add CLS and EOS.
-        return len(self.sequence) + 2
-
 
 class VariantModel(Protocol):
     """Minimal model-neutral inference interface."""
@@ -83,40 +78,22 @@ class VariantModel(Protocol):
         self,
         requests: Sequence[PositionRequest],
         *,
-        max_tokens_per_batch: int,
+        batch_size: int,
     ) -> Mapping[tuple[str, int], Mapping[str, float]]:
         """Return an amino-acid log score for each requested position."""
 
 
-def pack_token_batches(
-    requests: Sequence[PositionRequest], max_tokens: int
+def batch_requests(
+    requests: Sequence[PositionRequest], batch_size: int
 ) -> list[list[PositionRequest]]:
-    """Greedily preserve order while respecting a padded-token budget."""
+    """Split requests into fixed-size batches while preserving order."""
 
-    if max_tokens <= 0:
-        raise ValueError("max_tokens must be positive")
-
-    batches: list[list[PositionRequest]] = []
-    current: list[PositionRequest] = []
-    current_max = 0
-    for request in requests:
-        if request.token_count > max_tokens:
-            raise ValueError(
-                f"{request.transcript} requires {request.token_count} tokens, "
-                f"above the per-batch budget of {max_tokens}"
-            )
-        proposed_max = max(current_max, request.token_count)
-        proposed_tokens = proposed_max * (len(current) + 1)
-        if current and proposed_tokens > max_tokens:
-            batches.append(current)
-            current = []
-            current_max = 0
-        current.append(request)
-        current_max = max(current_max, request.token_count)
-
-    if current:
-        batches.append(current)
-    return batches
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    return [
+        list(requests[start : start + batch_size])
+        for start in range(0, len(requests), batch_size)
+    ]
 
 
 def log_odds_from_logits(
@@ -200,12 +177,12 @@ class ESMCVariantModel:
         self,
         requests: Sequence[PositionRequest],
         *,
-        max_tokens_per_batch: int,
+        batch_size: int,
     ) -> Mapping[tuple[str, int], Mapping[str, float]]:
         import torch
         from tqdm import tqdm
 
-        batches = pack_token_batches(requests, max_tokens_per_batch)
+        batches = batch_requests(requests, batch_size)
         result: dict[tuple[str, int], dict[str, float]] = {}
         for batch in tqdm(batches, desc="Scoring masked positions", unit="batch"):
             tokens = self.tokenizer(
@@ -271,12 +248,12 @@ class SaProtVariantModel:
         self,
         requests: Sequence[PositionRequest],
         *,
-        max_tokens_per_batch: int,
+        batch_size: int,
     ) -> Mapping[tuple[str, int], Mapping[str, float]]:
         import torch
         from tqdm import tqdm
 
-        batches = pack_token_batches(requests, max_tokens_per_batch)
+        batches = batch_requests(requests, batch_size)
         result: dict[tuple[str, int], dict[str, float]] = {}
         for batch in tqdm(batches, desc="Scoring masked positions", unit="batch"):
             combined = [self._combined_sequence(request) for request in batch]

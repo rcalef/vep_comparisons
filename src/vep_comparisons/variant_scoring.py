@@ -90,9 +90,13 @@ class ScoringSummary:
 
 
 def normalize_transcript(value: str) -> str:
-    """Remove version suffixes from a FASTA or variant transcript ID."""
+    """Extract a versionless transcript ID from a FASTA or variant value."""
 
-    identifier = value.split(maxsplit=1)[0].split("|", maxsplit=1)[0]
+    identifiers = value.split(maxsplit=1)[0].split("|")
+    identifier = next(
+        (identifier for identifier in identifiers if identifier.startswith("ENST")),
+        identifiers[0],
+    )
     return identifier.split(".", maxsplit=1)[0]
 
 
@@ -259,7 +263,7 @@ def score_protein_variants(
     device: str = "cuda",
     dtype: str = "float32",
     max_sequence_length: int | None = None,
-    max_tokens_per_batch: int = 4096,
+    batch_size: int = 1,
     model_factory: ModelFactory = _default_model_factory,
 ) -> ScoringSummary:
     """Validate, score one checkpoint, and atomically publish one table."""
@@ -276,12 +280,10 @@ def score_protein_variants(
                 )
             ]
         )
-    if max_tokens_per_batch < 1:
+    if batch_size < 1:
         raise InputValidationError(
             [
-                ValidationIssue(
-                    "invalid_max_tokens_per_batch", str(max_tokens_per_batch)
-                )
+                ValidationIssue("invalid_batch_size", str(batch_size))
             ]
         )
     require_structure = spec.family == "saprot"
@@ -317,24 +319,10 @@ def score_protein_variants(
         structure_tokens=structures,
         max_sequence_length=limit,
     )
-    oversized_for_budget = [
-        request for request in requests if request.token_count > max_tokens_per_batch
-    ]
-    if oversized_for_budget:
-        raise InputValidationError(
-            [
-                ValidationIssue(
-                    "token_budget_too_small",
-                    f"{request.transcript}: needs={request.token_count}, "
-                    f"budget={max_tokens_per_batch}",
-                )
-                for request in oversized_for_budget
-            ]
-        )
-
     print(
         f"model={model_name} candidates={len(candidates)} "
-        f"unique_scoreable_positions={len(requests)} max_length={limit}",
+        f"unique_scoreable_positions={len(requests)} max_length={limit} "
+        f"batch_size={batch_size}",
         file=sys.stderr,
     )
     print(
@@ -343,9 +331,7 @@ def score_protein_variants(
     )
 
     model = model_factory(spec, model_root, device, dtype)
-    position_scores = model.score_positions(
-        requests, max_tokens_per_batch=max_tokens_per_batch
-    )
+    position_scores = model.score_positions(requests, batch_size=batch_size)
 
     scores: list[float | None] = []
     for candidate in candidates:
@@ -369,7 +355,7 @@ def score_protein_variants(
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    output_frame.write_csv(output, separator="\t")
+    output_frame.write_csv(output, separator="\t", compression="gzip")
 
     runtime = time.monotonic() - started
     scored = sum(score is not None for score in scores)

@@ -10,9 +10,9 @@ import torch
 from vep_comparisons.variant_models import (
     MODEL_REGISTRY,
     PositionRequest,
+    batch_requests,
     log_odds_from_logits,
     marginalized_log_odds_from_logits,
-    pack_token_batches,
 )
 from vep_comparisons.variant_scoring import (
     InputValidationError,
@@ -62,7 +62,7 @@ class FakeModel:
     def __init__(self) -> None:
         self.requests: list[PositionRequest] = []
 
-    def score_positions(self, requests, *, max_tokens_per_batch):
+    def score_positions(self, requests, *, batch_size):
         self.requests.extend(requests)
         # A deterministic amino-acid score makes ALT - REF easy to inspect.
         alphabet = "ACDEFGHIKLMNPQRSTVWY"
@@ -88,11 +88,13 @@ def test_fasta_removes_versions_and_rejects_duplicate_ids(
         fasta,
         {
             "ENST000001.8|ENSG000001.2 gene metadata": "ACD",
+            "ENSP000003.1|ENST000003.4|ENSG000003.2|GENCODE metadata": "EFG",
             "TX000002.1 more metadata": "MNP",
         },
     )
     assert read_transcript_fasta(fasta) == {
         "ENST000001": "ACD",
+        "ENST000003": "EFG",
         "TX000002": "MNP",
     }
 
@@ -130,7 +132,7 @@ def test_selection_order_deduplication_and_overlength_nulls(tmp_path: Path) -> N
         model_root=tmp_path,
         output=output,
         max_sequence_length=3,
-        max_tokens_per_batch=10,
+        batch_size=2,
         model_factory=_factory_for(fake, calls),
     )
 
@@ -283,7 +285,7 @@ def test_model_capacity_boundaries_and_above_capacity_rejection(tmp_path: Path) 
             model_name=model_name,
             model_root=tmp_path,
             output=tmp_path / f"{model_name}-scores",
-            max_tokens_per_batch=4096,
+            batch_size=1,
             model_factory=_factory_for(fake, []),
             **kwargs,
         )
@@ -302,7 +304,7 @@ def test_model_capacity_boundaries_and_above_capacity_rejection(tmp_path: Path) 
             )
 
 
-def test_masked_marginal_math_and_token_budget_batching() -> None:
+def test_masked_marginal_math_and_fixed_size_batching() -> None:
     logits = [0.0, -2.0, 3.0, 1.0, 2.0]
     assert log_odds_from_logits(logits, ref_token=1, alt_token=2) == 5.0
     values = torch.tensor(logits)
@@ -318,10 +320,12 @@ def test_masked_marginal_math_and_token_budget_batching() -> None:
         PositionRequest("ENST000001", "AAA", 2),
         PositionRequest("ENST000002", "AAAAA", 1),
     ]
-    assert [len(batch) for batch in pack_token_batches(requests, 10)] == [2, 1]
-    assert [request.key for batch in pack_token_batches(requests, 100) for request in batch] == [
+    assert [len(batch) for batch in batch_requests(requests, 2)] == [2, 1]
+    assert [request.key for batch in batch_requests(requests, 10) for request in batch] == [
         request.key for request in requests
     ]
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        batch_requests(requests, 0)
 
 
 def test_cli_with_fake_adapter_writes_output_and_reports_to_stderr(
@@ -345,8 +349,8 @@ def test_cli_with_fake_adapter_writes_output_and_reports_to_stderr(
             str(tmp_path),
             "--output",
             str(output),
-            "--max-tokens-per-batch",
-            "10",
+            "--batch-size",
+            "2",
         ],
         model_factory=_factory_for(FakeModel(), []),
     )
