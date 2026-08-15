@@ -7,6 +7,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from math import exp
 from pathlib import Path
 
 import polars as pl
@@ -83,6 +84,7 @@ class ScoringSummary:
     model: str
     candidates: int
     unique_positions: int
+    window_requests: int
     scored: int
     null: int
     output_path: Path
@@ -220,28 +222,144 @@ def build_position_requests(
     *,
     structure_tokens: Mapping[str, str] | None,
     max_sequence_length: int,
+    long_sequence_mode: str = "window",
 ) -> list[PositionRequest]:
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int, int]] = set()
+    starts_by_transcript: dict[str, list[int]] = {}
     requests: list[PositionRequest] = []
     for candidate in candidates:
-        key = (candidate.transcript, candidate.position)
         sequence = sequences[candidate.transcript]
-        if key in seen or len(sequence) > max_sequence_length:
-            continue
-        seen.add(key)
-        requests.append(
-            PositionRequest(
-                transcript=candidate.transcript,
-                sequence=sequence,
-                position=candidate.position,
-                structure_tokens=(
-                    structure_tokens[candidate.transcript]
-                    if structure_tokens is not None
-                    else None
-                ),
+        if candidate.transcript not in starts_by_transcript:
+            if len(sequence) <= max_sequence_length:
+                starts_by_transcript[candidate.transcript] = [0]
+            elif long_sequence_mode == "window":
+                starts_by_transcript[candidate.transcript] = tile_window_starts(
+                    len(sequence), max_sequence_length
+                )
+            else:
+                starts_by_transcript[candidate.transcript] = []
+
+        for window_start in starts_by_transcript[candidate.transcript]:
+            window_end = window_start + max_sequence_length
+            if not window_start < candidate.position <= window_end:
+                continue
+            key = (candidate.transcript, candidate.position, window_start)
+            if key in seen:
+                continue
+            seen.add(key)
+            requests.append(
+                PositionRequest(
+                    transcript=candidate.transcript,
+                    sequence=sequence[window_start:window_end],
+                    position=candidate.position,
+                    structure_tokens=(
+                        structure_tokens[candidate.transcript][window_start:window_end]
+                        if structure_tokens is not None
+                        else None
+                    ),
+                    window_start=window_start,
+                )
             )
-        )
     return requests
+
+
+def tile_window_starts(
+    sequence_length: int, window_length: int
+) -> list[int]:
+    """Return deterministic full-length tiles with approximately 50% overlap."""
+
+    if sequence_length <= window_length:
+        return [0]
+
+    overlap = (window_length + 1) // 2
+    step = max(1, window_length - overlap)
+    starts: list[int] = []
+    left = 0
+    right = sequence_length
+    while right - left > window_length:
+        starts.extend((left, right - window_length))
+        left += step
+        right -= step
+
+    innermost_left = starts[-2]
+    innermost_right = starts[-1]
+    innermost_overlap = innermost_left + window_length - innermost_right
+    if innermost_overlap < overlap:
+        starts.append((sequence_length - window_length) // 2)
+
+    return sorted(set(starts))
+
+
+def sigmoid_window_weight(
+    request: PositionRequest,
+    *,
+    protein_length: int,
+    window_length: int,
+) -> float:
+    """Return the sigmoid edge weight while preserving true terminal edges."""
+
+    if len(request.sequence) < window_length:
+        return 1.0
+
+    overlap = (window_length + 1) // 2
+    taper_length = round(overlap / 2)
+    if taper_length == 0:
+        return 1.0
+    scale = 20.0 * window_length / 1022.0
+    local_index = request.local_position - 1
+
+    if request.window_start > 0 and local_index < taper_length:
+        return 1.0 / (
+            1.0 + exp(-(local_index - taper_length / 2) / scale)
+        )
+
+    window_end = request.window_start + len(request.sequence)
+    if window_end < protein_length and local_index >= window_length - taper_length:
+        taper_index = local_index - (window_length - taper_length)
+        return 1.0 / (
+            1.0 + exp((taper_index - taper_length / 2) / scale)
+        )
+    return 1.0
+
+
+def aggregate_position_scores(
+    requests: Sequence[PositionRequest],
+    window_scores: Mapping[
+        tuple[str, int, int], Mapping[str, float]
+    ],
+    sequences: Mapping[str, str],
+    *,
+    window_length: int,
+) -> dict[tuple[str, int], dict[str, float]]:
+    """Combine window-specific amino-acid scores by normalized edge weight."""
+
+    grouped: dict[tuple[str, int], list[PositionRequest]] = {}
+    for request in requests:
+        grouped.setdefault((request.transcript, request.position), []).append(request)
+
+    aggregated: dict[tuple[str, int], dict[str, float]] = {}
+    for key, position_requests in grouped.items():
+        weights = [
+            sigmoid_window_weight(
+                request,
+                protein_length=len(sequences[request.transcript]),
+                window_length=window_length,
+            )
+            for request in position_requests
+        ]
+        total_weight = sum(weights)
+        normalized_weights = [weight / total_weight for weight in weights]
+        first_scores = window_scores[position_requests[0].key]
+        aggregated[key] = {
+            amino_acid: sum(
+                normalized_weight * window_scores[request.key][amino_acid]
+                for request, normalized_weight in zip(
+                    position_requests, normalized_weights, strict=True
+                )
+            )
+            for amino_acid in first_scores
+        }
+    return aggregated
 
 
 ModelFactory = Callable[[ModelSpec, Path, str, str], VariantModel]
@@ -263,6 +381,7 @@ def score_protein_variants(
     device: str = "cuda",
     dtype: str = "float32",
     max_sequence_length: int | None = None,
+    long_sequence_mode: str = "window",
     batch_size: int = 1,
     model_factory: ModelFactory = _default_model_factory,
 ) -> ScoringSummary:
@@ -279,6 +398,10 @@ def score_protein_variants(
                     f"requested={limit}, supported=1..{spec.capacity} for {model_name}",
                 )
             ]
+        )
+    if long_sequence_mode not in {"window", "null"}:
+        raise InputValidationError(
+            [ValidationIssue("invalid_long_sequence_mode", long_sequence_mode)]
         )
     if batch_size < 1:
         raise InputValidationError(
@@ -318,10 +441,15 @@ def score_protein_variants(
         sequences,
         structure_tokens=structures,
         max_sequence_length=limit,
+        long_sequence_mode=long_sequence_mode,
+    )
+    unique_positions = len(
+        {(request.transcript, request.position) for request in requests}
     )
     print(
         f"model={model_name} candidates={len(candidates)} "
-        f"unique_scoreable_positions={len(requests)} max_length={limit} "
+        f"unique_positions={unique_positions} window_requests={len(requests)} "
+        f"max_length={limit} long_sequence_mode={long_sequence_mode} "
         f"batch_size={batch_size}",
         file=sys.stderr,
     )
@@ -331,14 +459,21 @@ def score_protein_variants(
     )
 
     model = model_factory(spec, model_root, device, dtype)
-    position_scores = model.score_positions(requests, batch_size=batch_size)
+    window_scores = model.score_positions(requests, batch_size=batch_size)
+    position_scores = aggregate_position_scores(
+        requests,
+        window_scores,
+        sequences,
+        window_length=limit,
+    )
 
     scores: list[float | None] = []
     for candidate in candidates:
-        if len(sequences[candidate.transcript]) > limit:
+        key = (candidate.transcript, candidate.position)
+        if key not in position_scores:
             scores.append(None)
             continue
-        amino_acid_scores = position_scores[(candidate.transcript, candidate.position)]
+        amino_acid_scores = position_scores[key]
         scores.append(amino_acid_scores[candidate.alt] - amino_acid_scores[candidate.ref])
 
     output_frame = (
@@ -362,7 +497,8 @@ def score_protein_variants(
     summary = ScoringSummary(
         model=model_name,
         candidates=len(candidates),
-        unique_positions=len(requests),
+        unique_positions=unique_positions,
+        window_requests=len(requests),
         scored=scored,
         null=len(scores) - scored,
         output_path=output,

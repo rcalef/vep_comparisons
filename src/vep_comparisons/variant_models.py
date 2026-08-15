@@ -59,16 +59,23 @@ MODEL_REGISTRY: dict[str, ModelSpec] = {
 
 @dataclass(frozen=True)
 class PositionRequest:
-    """One full-protein masked position to score."""
+    """One protein-window masked position to score."""
 
     transcript: str
     sequence: str
-    position: int  # one based
+    position: int  # global, one based
     structure_tokens: str | None = None
+    window_start: int = 0  # global, zero based
 
     @property
-    def key(self) -> tuple[str, int]:
-        return (self.transcript, self.position)
+    def local_position(self) -> int:
+        """One-based mask position within ``sequence``."""
+
+        return self.position - self.window_start
+
+    @property
+    def key(self) -> tuple[str, int, int]:
+        return (self.transcript, self.position, self.window_start)
 
 
 class VariantModel(Protocol):
@@ -79,7 +86,7 @@ class VariantModel(Protocol):
         requests: Sequence[PositionRequest],
         *,
         batch_size: int,
-    ) -> Mapping[tuple[str, int], Mapping[str, float]]:
+    ) -> Mapping[tuple[str, int, int], Mapping[str, float]]:
         """Return an amino-acid log score for each requested position."""
 
 
@@ -178,12 +185,12 @@ class ESMCVariantModel:
         requests: Sequence[PositionRequest],
         *,
         batch_size: int,
-    ) -> Mapping[tuple[str, int], Mapping[str, float]]:
+    ) -> Mapping[tuple[str, int, int], Mapping[str, float]]:
         import torch
         from tqdm import tqdm
 
         batches = batch_requests(requests, batch_size)
-        result: dict[tuple[str, int], dict[str, float]] = {}
+        result: dict[tuple[str, int, int], dict[str, float]] = {}
         for batch in tqdm(batches, desc="Scoring masked positions", unit="batch"):
             tokens = self.tokenizer(
                 [request.sequence for request in batch],
@@ -191,13 +198,13 @@ class ESMCVariantModel:
                 padding=True,
             )["input_ids"]
             for row, request in enumerate(batch):
-                tokens[row, request.position] = self.tokenizer.mask_token_id
+                tokens[row, request.local_position] = self.tokenizer.mask_token_id
             tokens = tokens.to(self.device)
 
             with torch.inference_mode():
                 logits = self.model(tokens).sequence_logits
             for row, request in enumerate(batch):
-                position_logits = logits[row, request.position].float()
+                position_logits = logits[row, request.local_position].float()
                 result[request.key] = {
                     aa: float(position_logits[token_id].item())
                     for aa, token_id in self.aa_token_ids.items()
@@ -241,7 +248,11 @@ class SaProtVariantModel:
         for index, (aa, structure) in enumerate(
             zip(request.sequence, request.structure_tokens, strict=True), start=1
         ):
-            parts.append(f"#{structure}" if index == request.position else f"{aa}{structure}")
+            parts.append(
+                f"#{structure}"
+                if index == request.local_position
+                else f"{aa}{structure}"
+            )
         return "".join(parts)
 
     def score_positions(
@@ -249,12 +260,12 @@ class SaProtVariantModel:
         requests: Sequence[PositionRequest],
         *,
         batch_size: int,
-    ) -> Mapping[tuple[str, int], Mapping[str, float]]:
+    ) -> Mapping[tuple[str, int, int], Mapping[str, float]]:
         import torch
         from tqdm import tqdm
 
         batches = batch_requests(requests, batch_size)
-        result: dict[tuple[str, int], dict[str, float]] = {}
+        result: dict[tuple[str, int, int], dict[str, float]] = {}
         for batch in tqdm(batches, desc="Scoring masked positions", unit="batch"):
             combined = [self._combined_sequence(request) for request in batch]
             tokenized = self.tokenizer(combined, return_tensors="pt", padding=True)
@@ -263,7 +274,7 @@ class SaProtVariantModel:
                 logits = self.model(**inputs).logits
 
             for row, request in enumerate(batch):
-                position_logits = logits[row, request.position].float()
+                position_logits = logits[row, request.local_position].float()
                 result[request.key] = {
                     aa: float(
                         torch.logsumexp(

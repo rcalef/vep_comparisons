@@ -105,10 +105,19 @@ and exactly match translation lengths.
 Eligible rows are protein-coding annotations whose comma-separated consequence
 terms include `missense_variant`. All eligible rows are validated before model
 loading. Invalid or incomplete inputs abort without publishing output. Proteins
-above the configured full-sequence limit are retained with a null score; the
-default limits are 2,046 residues for ESM-C and 1,024 for SaProt. Scores are
-`log P(ALT) - log P(REF)`, so higher values mean greater model preference for
-the alternate residue.
+that exceed model context are scored by default with full-capacity windows
+tiled symmetrically from both termini at approximately 50% overlap. Only tiles
+containing a requested variant are evaluated. Scores from overlapping tiles are
+combined with normalized sigmoid edge weights; true protein termini are not
+downweighted. This can require up to three contexts per variant. The default
+window lengths are 2,046 residues for ESM-C and 1,024 for SaProt.
+
+`--max-sequence-length` controls the per-window length and cannot exceed the
+selected model's capacity. Use `--long-sequence-mode null` to restore the legacy
+behavior in which proteins longer than that limit receive null scores. Windowing
+cannot recover interactions between residues separated by more than one model
+context. Scores are `log P(ALT) - log P(REF)`, so higher values mean greater
+model preference for the alternate residue.
 
 The command atomically writes `<output>.tsv.gz` with columns `variant`, `gene`,
 `feature`, `protein_position`, `amino_acids`, `model`, and `score`. It is

@@ -42,7 +42,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("float32", "bfloat16", "float16"),
         default="float32",
     )
-    parser.add_argument("--max-sequence-length", type=int)
+    parser.add_argument(
+        "--max-sequence-length",
+        type=int,
+        help=(
+            "residues per inference window (default: model capacity; cannot "
+            "exceed model capacity)"
+        ),
+    )
+    parser.add_argument(
+        "--long-sequence-mode",
+        choices=("window", "null"),
+        default="window",
+        help="tile long proteins or retain the legacy null-score behavior",
+    )
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -77,6 +90,7 @@ def run_cli(
             device=args.device,
             dtype=args.dtype,
             max_sequence_length=args.max_sequence_length,
+            long_sequence_mode=args.long_sequence_mode,
             batch_size=args.batch_size,
             **kwargs,
         )
