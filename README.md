@@ -58,7 +58,8 @@ tabular output. Lines beginning with `##` are ignored and `-` is read as null.
 
 The VEP annotation fields appended to the selected metadata are `gene`,
 `feature`, `consequence`, `cdna_position`, `cds_position`, `protein_position`,
-`amino_acids`, `symbol`, and `biotype`.
+`amino_acids`, `symbol`, `biotype`, `gnomade_af`, `gnomadg_af`, `max_af`, and
+`max_af_pops`.
 
 ### Fixed biological policy
 

@@ -29,6 +29,10 @@ VEP_COLUMNS = [
     "CANONICAL",
     "MANE",
     "TSL",
+    "gnomADe_AF",
+    "gnomADg_AF",
+    "MAX_AF",
+    "MAX_AF_POPS",
 ]
 
 
@@ -42,6 +46,10 @@ def _annotation(
     canonical: str | None = None,
     mane: str | None = None,
     tsl: str | None = "1",
+    gnomade_af: str | None = "0.001",
+    gnomadg_af: str | None = "0.002",
+    max_af: str | None = "0.003",
+    max_af_pops: str | None = "gnomADe_AFR",
 ) -> dict[str, str | None]:
     return {
         "variant": variant,
@@ -57,6 +65,10 @@ def _annotation(
         "canonical": canonical,
         "mane": mane,
         "tsl": tsl,
+        "gnomade_af": gnomade_af,
+        "gnomadg_af": gnomadg_af,
+        "max_af": max_af,
+        "max_af_pops": max_af_pops,
     }
 
 
@@ -122,7 +134,17 @@ def test_filtering_biotypes_multiple_genes_and_transcript_priority() -> None:
         _annotation("other", "G3", "ENST3", biotype="processed_transcript"),
         _annotation("multi", "G4", "ENST4"),
         _annotation("multi", "G5", "ENST5"),
-        _annotation("priority", "MANE", "ENST_MANE", mane="MANE_SELECT", tsl="5"),
+        _annotation(
+            "priority",
+            "MANE",
+            "ENST_MANE",
+            mane="MANE_SELECT",
+            tsl="5",
+            gnomade_af="0.004",
+            gnomadg_af="0.005",
+            max_af="0.006",
+            max_af_pops="gnomADg_AFR",
+        ),
         _annotation(
             "priority", "MANE", "ENST_NOT_MANE", canonical="YES", mane=None
         ),
@@ -158,6 +180,12 @@ def test_filtering_biotypes_multiple_genes_and_transcript_priority() -> None:
         "TSL": "ENST_TSL_2",
         "FEATURE": "ENST000001",
     }
+    assert (
+        result
+        .filter(pl.col("variant") == "priority", pl.col("gene") == "MANE")
+        .select("gnomade_af", "gnomadg_af", "max_af", "max_af_pops")
+        .row(0)
+    ) == ("0.004", "0.005", "0.006", "gnomADg_AFR")
 
 
 def test_downsample_is_variant_level_stratified_and_reproducible() -> None:
@@ -370,6 +398,9 @@ def test_cli_end_to_end_preserves_metadata_and_writes_gzip(
     assert downsampled.height == 7
     assert downsampled_variant_count == 6
     assert full.columns[:9] == list(selected_rows[0])
+    assert full.select(
+        "gnomade_af", "gnomadg_af", "max_af", "max_af_pops"
+    ).row(0) == (0.001, 0.002, 0.003, "gnomADe_AFR")
     assert cohorts == ["synthetic"]
     assert set(retained_positive.get_column("label")) == {
         "Pathogenic",

@@ -33,6 +33,10 @@ VEP_COLUMNS = (
     "canonical",
     "mane",
     "tsl",
+    "gnomade_af",
+    "gnomadg_af",
+    "max_af",
+    "max_af_pops",
 )
 
 OUTPUT_ANNOTATION_COLUMNS = (
@@ -45,6 +49,10 @@ OUTPUT_ANNOTATION_COLUMNS = (
     "amino_acids",
     "symbol",
     "biotype",
+    "gnomade_af",
+    "gnomadg_af",
+    "max_af",
+    "max_af_pops",
 )
 
 REMOVED_CONSEQUENCES = (

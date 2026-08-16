@@ -8,6 +8,7 @@ app = marimo.App(width="medium")
 def _():
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import math
+    import os
     from pathlib import Path
     import re
     import time
@@ -23,6 +24,7 @@ def _():
         as_completed,
         math,
         mo,
+        os,
         pl,
         pyBigWig,
         pysam,
@@ -32,11 +34,26 @@ def _():
 
 
 @app.cell
-def _(Path):
-    data_dir = Path("/orcd/data/manoli/001/rcalef/data/vep_comparisons")
+def _(Path, os):
+    data_dir = Path(
+        os.environ.get(
+            "VEP_COMPARISONS_DATA_DIR",
+            "/orcd/data/manoli/001/rcalef/data/vep_comparisons",
+        )
+    )
     variants_dir = data_dir / "variants"
-    collated_path = variants_dir / "collated_variants.tsv.gz"
-    annotated_path = variants_dir / "collated_variants.annotated.tsv.gz"
+    collated_path = Path(
+        os.environ.get(
+            "VEP_COMPARISONS_COLLATED_PATH",
+            variants_dir / "collated_variants.tsv.gz",
+        )
+    )
+    annotated_path = Path(
+        os.environ.get(
+            "VEP_COMPARISONS_ANNOTATED_PATH",
+            variants_dir / "collated_variants.annotated.tsv.gz",
+        )
+    )
 
     annotation_paths = {
         "phylop": data_dir / "conservation" / "phylop" / "hg38.phyloP447way.bw",

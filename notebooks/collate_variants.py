@@ -6,6 +6,7 @@ app = marimo.App()
 
 @app.cell
 def _():
+    import os
     from pathlib import Path
 
     import marimo as mo
@@ -13,12 +14,17 @@ def _():
     import polars.selectors as cs
     import seaborn as sns
 
-    return Path, cs, mo, pl
+    return Path, cs, mo, os, pl
 
 
 @app.cell
-def _(Path):
-    data_dir = Path("/orcd/data/manoli/001/rcalef/data/vep_comparisons/variants")
+def _(Path, os):
+    data_dir = Path(
+        os.environ.get(
+            "VEP_COMPARISONS_VARIANTS_DIR",
+            "/orcd/data/manoli/001/rcalef/data/vep_comparisons/variants",
+        )
+    )
 
     data_paths = {
         "ukbb": data_dir
@@ -34,7 +40,13 @@ def _(Path):
         "eqtl": ["high_pip"],
         "clinvar": ["Pathogenic", "Likely_pathogenic"],
     }
-    return data_dir, data_paths, positive_labels
+    dataset_specific_cols = {
+        "ukbb": [],
+        "multisusie": [],
+        "eqtl": ["target_gene", "afc", "tissue", "all_tissues"],
+        "clinvar": ["alleleid", "stars"],
+    }
+    return data_dir, data_paths, dataset_specific_cols, positive_labels
 
 
 @app.cell
@@ -53,6 +65,7 @@ def _(Path, pl):
         "amino_acids",
         "symbol",
         "biotype",
+        "max_af_pops",
     ]
 
     shared_cols_int = [
@@ -62,7 +75,12 @@ def _(Path, pl):
         "cds_position",
         "protein_position",
     ]
-    shared_cols = shared_cols_str + shared_cols_int
+    shared_cols_float = [
+        "gnomade_af",
+        "gnomadg_af",
+        "max_af",
+    ]
+    shared_cols = shared_cols_str + shared_cols_int + shared_cols_float
 
     separate_cols = [
         "pip",
@@ -78,6 +96,7 @@ def _(Path, pl):
             schema_overrides={
                 **{name: pl.String for name in shared_cols_str},
                 **{name: pl.UInt32 for name in shared_cols_int},
+                **{name: pl.Float64 for name in shared_cols_float},
             },
         )
 
@@ -102,6 +121,7 @@ def _(mo):
 def _(
     cs,
     data_paths,
+    dataset_specific_cols,
     id_cols,
     pl,
     read_filtered_vep,
@@ -135,14 +155,20 @@ def _(
                 f"{excluded.get_column('variant').n_unique():,} non-autosomal "
                 f"ClinVar variants / {excluded.height:,} gene-level rows"
             )
+        variants = variants.select(
+            *id_cols,
+            *shared_cols,
+            *separate_cols,
+            *dataset_specific_cols[name],
+        )
         if variants.select(pl.struct(id_cols).is_duplicated().any()).item():
             raise ValueError(f"{name!r} has duplicate (variant, gene) rows")
 
         datasets[name] = variants
-        extra_cols = variants.select(
-            cs.exclude(id_cols + shared_cols + separate_cols)
-        ).columns
-        rename_cols = {col: f"{name}_{col}" for col in separate_cols + extra_cols}
+        rename_cols = {
+            col: f"{name}_{col}"
+            for col in separate_cols + dataset_specific_cols[name]
+        }
         frames_to_collate.append(variants.rename(rename_cols))
 
     validation_rows = []
