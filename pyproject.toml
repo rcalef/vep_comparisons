@@ -29,6 +29,7 @@ dependencies = [
 [project.scripts]
 curate-vep-variants = "vep_comparisons.cli:main"
 score-protein-variants = "vep_comparisons.score_variants_cli:main"
+recover-saprot-structures = "vep_comparisons.saprot_recovery_cli:main"
 
 [dependency-groups]
 dev = [

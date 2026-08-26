@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import bz2
+import gzip
 import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from logging import getLogger
 from math import exp
 from pathlib import Path
 
 import polars as pl
-import pysam
+from Bio import SeqIO
 
 from .variant_models import (
     MODEL_REGISTRY,
@@ -21,6 +24,7 @@ from .variant_models import (
     load_variant_model,
 )
 
+logger = getLogger(__name__)
 
 REQUIRED_VARIANT_COLUMNS = (
     "variant",
@@ -106,14 +110,20 @@ def read_transcript_fasta(path: Path) -> dict[str, str]:
     """Read FASTA records keyed by versionless transcript ID."""
 
     records: dict[str, str] = {}
-    with pysam.FastxFile(path) as fasta:
-        for record in fasta:
+    if path.suffix == ".gz":
+        open_fn = gzip.open
+    elif path.suffix == ".bz2":
+        open_fn = bz2.open
+    else:
+        open_fn = open
+    with open_fn(path, "rt") as fasta:
+        for record in SeqIO.parse(fasta, "fasta"):
             transcript = normalize_transcript(record.name)
             if transcript in records:
                 raise InputValidationError(
                     [ValidationIssue("duplicate_transcript", transcript)]
                 )
-            records[transcript] = record.sequence
+            records[transcript] = record.seq
 
     return records
 
@@ -133,17 +143,16 @@ def read_variant_candidates(path: Path) -> list[Candidate]:
         normalized = column.lstrip("#").lower()
         rename[column] = "variant" if normalized == "uploaded_variation" else normalized
     frame = frame.rename(rename)
+    logger.info(f"Loaded variants: {len(frame)}")
     frame = (
-        frame
-        .filter(
+        frame.filter(
             pl.col("biotype") == "protein_coding",
-            pl.col("consequence")
-            .str.split(",")
-            .list.contains("missense_variant"),
+            pl.col("consequence").str.split(",").list.contains("missense_variant"),
         )
         .select(REQUIRED_VARIANT_COLUMNS)
         .with_columns(pl.col("protein_position").cast(pl.Int64))
     )
+    logger.info(f"Protein missense variants: {len(frame)}")
 
     candidates: list[Candidate] = []
     for row in frame.iter_rows(named=True):
@@ -263,9 +272,7 @@ def build_position_requests(
     return requests
 
 
-def tile_window_starts(
-    sequence_length: int, window_length: int
-) -> list[int]:
+def tile_window_starts(sequence_length: int, window_length: int) -> list[int]:
     """Return deterministic full-length tiles with approximately 50% overlap."""
 
     if sequence_length <= window_length:
@@ -309,24 +316,18 @@ def sigmoid_window_weight(
     local_index = request.local_position - 1
 
     if request.window_start > 0 and local_index < taper_length:
-        return 1.0 / (
-            1.0 + exp(-(local_index - taper_length / 2) / scale)
-        )
+        return 1.0 / (1.0 + exp(-(local_index - taper_length / 2) / scale))
 
     window_end = request.window_start + len(request.sequence)
     if window_end < protein_length and local_index >= window_length - taper_length:
         taper_index = local_index - (window_length - taper_length)
-        return 1.0 / (
-            1.0 + exp((taper_index - taper_length / 2) / scale)
-        )
+        return 1.0 / (1.0 + exp((taper_index - taper_length / 2) / scale))
     return 1.0
 
 
 def aggregate_position_scores(
     requests: Sequence[PositionRequest],
-    window_scores: Mapping[
-        tuple[str, int, int], Mapping[str, float]
-    ],
+    window_scores: Mapping[tuple[str, int, int], Mapping[str, float]],
     sequences: Mapping[str, str],
     *,
     window_length: int,
@@ -364,6 +365,7 @@ def aggregate_position_scores(
 
 ModelFactory = Callable[[ModelSpec, Path, str, str], VariantModel]
 
+
 def _default_model_factory(
     spec: ModelSpec, model_root: Path, device: str, dtype: str
 ) -> VariantModel:
@@ -378,6 +380,7 @@ def score_protein_variants(
     model_root: Path,
     output: Path,
     structure_tokens_path: Path | None = None,
+    ignore_missing_structure_tokens: bool = False,
     device: str = "cuda",
     dtype: str = "float32",
     max_sequence_length: int | None = None,
@@ -405,11 +408,18 @@ def score_protein_variants(
         )
     if batch_size < 1:
         raise InputValidationError(
-            [
-                ValidationIssue("invalid_batch_size", str(batch_size))
-            ]
+            [ValidationIssue("invalid_batch_size", str(batch_size))]
         )
     require_structure = spec.family == "saprot"
+    if ignore_missing_structure_tokens and not require_structure:
+        raise InputValidationError(
+            [
+                ValidationIssue(
+                    "invalid_ignore_missing_structure_tokens",
+                    f"{model_name} does not use structure tokens",
+                )
+            ]
+        )
     if require_structure and structure_tokens_path is None:
         raise InputValidationError(
             [
@@ -427,6 +437,27 @@ def score_protein_variants(
         if require_structure and structure_tokens_path is not None
         else None
     )
+    if ignore_missing_structure_tokens:
+        assert structures is not None
+        ignored_transcripts = {
+            candidate.transcript
+            for candidate in candidates
+            if candidate.transcript in sequences
+            and candidate.transcript not in structures
+        }
+        if ignored_transcripts:
+            candidate_count = len(candidates)
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.transcript not in ignored_transcripts
+            ]
+            logger.warning(
+                "Ignored %d candidate(s) across %d transcript(s) with no "
+                "structure tokens",
+                candidate_count - len(candidates),
+                len(ignored_transcripts),
+            )
     issues = validate_candidates(
         candidates,
         sequences,
@@ -474,10 +505,12 @@ def score_protein_variants(
             scores.append(None)
             continue
         amino_acid_scores = position_scores[key]
-        scores.append(amino_acid_scores[candidate.alt] - amino_acid_scores[candidate.ref])
+        scores.append(
+            amino_acid_scores[candidate.alt] - amino_acid_scores[candidate.ref]
+        )
 
-    output_frame = (
-        pl.DataFrame({
+    output_frame = pl.DataFrame(
+        {
             "variant": [candidate.variant for candidate in candidates],
             "gene": [candidate.gene for candidate in candidates],
             "feature": [candidate.feature for candidate in candidates],
@@ -485,9 +518,8 @@ def score_protein_variants(
             "amino_acids": [candidate.amino_acids for candidate in candidates],
             "model": [model_name] * len(candidates),
             "score": pl.Series(scores, dtype=pl.Float64),
-        })
-        .select(OUTPUT_COLUMNS)
-    )
+        }
+    ).select(OUTPUT_COLUMNS)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     output_frame.write_csv(output, separator="\t", compression="gzip")

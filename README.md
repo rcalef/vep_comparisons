@@ -101,7 +101,37 @@ score-protein-variants \
 The available models are `esmc-300m`, `esmc-600m`, `saprot-35m`, and
 `saprot-650m`. SaProt additionally requires `--structure-tokens` pointing to a
 complete ENST-keyed 3Di FASTA. Tokens must be lowercase Foldseek tokens (or `#`)
-and exactly match translation lengths.
+and exactly match translation lengths. If structure coverage is intentionally
+partial, `--ignore-missing-structure-tokens` omits candidates on absent
+transcripts. Present records with a length mismatch still fail validation so
+residue coordinates cannot be silently corrupted.
+
+Length-mismatched structure records can be conservatively recovered from
+existing AlphaFoldDB isoform models with `recover-saprot-structures`. The
+preparation notebook writes the required enriched mismatch inventory. The
+recovery command accepts only a unique monomer whose API sequence exactly
+matches the full GENCODE translation, downloads the API-provided PDB URL, runs
+Foldseek once over the accepted directory, validates both Foldseek sequences,
+and merges without replacing an existing transcript:
+
+```bash
+recover-saprot-structures \
+  --mismatches scoring/saprot_recovery/mismatch_candidates.tsv \
+  --translations gencode.v50.pc_translations.fa.gz \
+  --existing-tokens scoring/filtered_foldseek_toks.fa.bz2 \
+  --output-dir scoring/saprot_recovery \
+  --variants final_variants.tsv.gz \
+  --foldseek ~/install/foldseek/bin/foldseek \
+  --threads 8
+```
+
+The output directory contains the cached API responses and PDBs,
+`foldseek_descriptors.tsv`, a per-transcript `recovery_manifest.tsv`, recovered
+tokens, and a separately published merged token FASTA. Failed discovery,
+downloads, ambiguous matches, partial models, and invalid descriptors remain
+explicit unresolved manifest rows. Recovery deliberately uses no additional
+pLDDT mask so its processing remains consistent with the existing token
+artifact.
 
 Eligible rows are protein-coding annotations whose comma-separated consequence
 terms include `missense_variant`. All eligible rows are validated before model

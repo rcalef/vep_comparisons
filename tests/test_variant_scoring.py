@@ -509,6 +509,76 @@ def test_overlength_saprot_rows_still_require_valid_structure(tmp_path: Path) ->
         )
 
 
+def test_saprot_can_ignore_only_missing_structure_transcripts(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    variants = tmp_path / "variants.tsv.gz"
+    sequences = tmp_path / "sequences.fa"
+    structures = tmp_path / "structures.fa"
+    output = tmp_path / "scores.tsv.gz"
+    _write_variants(
+        variants,
+        [
+            _row("scored", "ENST000001", 1, "A/C"),
+            _row("ignored", "ENST000002", 1, "A/D"),
+        ],
+    )
+    _write_fasta(
+        sequences,
+        {"ENST000001": "ACD", "ENST000002": "AAA"},
+    )
+    _write_fasta(structures, {"ENST000001": "pyn"})
+    fake = FakeModel()
+
+    exit_code = run_cli(
+        [
+            "--variants",
+            str(variants),
+            "--sequences",
+            str(sequences),
+            "--structure-tokens",
+            str(structures),
+            "--ignore-missing-structure-tokens",
+            "--model",
+            "saprot-35m",
+            "--model-dir",
+            str(tmp_path),
+            "--output",
+            str(output),
+        ],
+        model_factory=_factory_for(fake, []),
+    )
+
+    result = pl.read_csv(output, separator="\t")
+    assert exit_code == 0
+    assert result.get_column("variant").to_list() == ["scored"]
+    assert [request.transcript for request in fake.requests] == ["ENST000001"]
+    assert "Ignored 1 candidate(s) across 1 transcript(s)" in caplog.text
+
+
+def test_ignoring_missing_structures_does_not_hide_length_mismatches(
+    tmp_path: Path,
+) -> None:
+    variants = tmp_path / "variants.tsv.gz"
+    sequences = tmp_path / "sequences.fa"
+    structures = tmp_path / "structures.fa"
+    _write_variants(variants, [_row("bad", "ENST000001", 1, "A/C")])
+    _write_fasta(sequences, {"ENST000001": "ACD"})
+    _write_fasta(structures, {"ENST000001": "pp"})
+
+    with pytest.raises(InputValidationError, match="sequence_structure_length_mismatch"):
+        score_protein_variants(
+            variants_path=variants,
+            sequences_path=sequences,
+            structure_tokens_path=structures,
+            ignore_missing_structure_tokens=True,
+            model_name="saprot-35m",
+            model_root=tmp_path,
+            output=tmp_path / "scores.tsv.gz",
+            model_factory=_factory_for(FakeModel(), []),
+        )
+
+
 def test_model_capacity_boundaries_and_above_capacity_rejection(tmp_path: Path) -> None:
     for model_name in ("esmc-300m", "saprot-35m"):
         spec = MODEL_REGISTRY[model_name]

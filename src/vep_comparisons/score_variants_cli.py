@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from pathlib import Path
@@ -34,6 +35,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--structure-tokens",
         type=Path,
         help="ENST-keyed 3Di FASTA; required for SaProt",
+    )
+    parser.add_argument(
+        "--ignore-missing-structure-tokens",
+        "--skip-missing-structure-tokens",
+        action="store_true",
+        help=(
+            "for SaProt, omit transcripts absent from the 3Di FASTA; "
+            "malformed or length-mismatched records remain fatal"
+        ),
     )
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--device", default="cuda")
@@ -75,10 +85,15 @@ def run_cli(
     *,
     model_factory: ModelFactory | None = None,
 ) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     args = parse_args(argv)
     kwargs = {}
     if model_factory is not None:
         kwargs["model_factory"] = model_factory
+
     try:
         score_protein_variants(
             variants_path=args.variants,
@@ -86,6 +101,7 @@ def run_cli(
             model_name=args.model,
             model_root=args.model_dir,
             structure_tokens_path=args.structure_tokens,
+            ignore_missing_structure_tokens=args.ignore_missing_structure_tokens,
             output=args.output,
             device=args.device,
             dtype=args.dtype,
