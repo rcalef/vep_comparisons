@@ -1,0 +1,40 @@
+{
+  "expected": {
+    "alphabet_size": 22,
+    "config_name": "giga",
+    "embed_dim": 1280,
+    "num_blocks": 33,
+    "num_heads": 20,
+    "token_ids": {
+      "-": 21,
+      "<cls>": 0,
+      "<eos>": 2,
+      "<mask>": 4,
+      "<pad>": 1,
+      "<unk>": 3,
+      "A": 5,
+      "B": 16,
+      "C": 6,
+      "D": 17,
+      "G": 7,
+      "H": 18,
+      "I": 9,
+      "K": 12,
+      "M": 13,
+      "N": 20,
+      "R": 10,
+      "S": 14,
+      "T": 8,
+      "V": 19,
+      "W": 15,
+      "Y": 11
+    },
+    "tokens": ["<cls>", "<pad>", "<eos>", "<unk>", "<mask>", "A", "C", "G", "T", "I", "R", "Y", "K", "M", "S", "W", "B", "D", "H", "V", "N", "-"]
+  },
+  "model": "rinalmo-giga",
+  "repository": "lbcb-sci/RiNALMo",
+  "revision": "2c2c5c14a5ae609d8c560a5d9ca32e51e0288955",
+  "sha256": {
+    "rinalmo_giga_pretrained.pt": "cd93c3f21eb3e767373c9491192686b5846247bd1110693e453c1dd0f321c0db"
+  }
+}

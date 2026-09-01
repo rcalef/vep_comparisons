@@ -1,0 +1,16 @@
+{
+  "expected": {
+    "has_mlm_head": true,
+    "mlm_head_dim": 4,
+    "n_tracks": 6
+  },
+  "model": "orthrus-mlm-6-track",
+  "repository": "antichronology/orthrus-mlm-6-track",
+  "revision": "5f0dc87d51065035fc28e71972c69f9c84f4deae",
+  "sha256": {
+    "README.md": "b49b0b42da933715c425533144d5a7cdbe1fa9ffa799d34bfa6295bbfca04f9d",
+    "config.json": "e4dcf074b3102a8a5a5daee8c6c008f361ccc3d4462dc0d19b750cfd8cce038e",
+    "model.safetensors": "0e6907b4291c18fca205e81ab3b55ad5fe1e5baa7b1d5f8d78127a8108426090",
+    "orthrus_hf.py": "92644ed0976080456c150a90320cda9be625c11e335b05b9c0cdc5ea351e19e3"
+  }
+}

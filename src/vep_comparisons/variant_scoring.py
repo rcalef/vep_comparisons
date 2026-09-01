@@ -123,7 +123,7 @@ def read_transcript_fasta(path: Path) -> dict[str, str]:
                 raise InputValidationError(
                     [ValidationIssue("duplicate_transcript", transcript)]
                 )
-            records[transcript] = record.seq
+            records[transcript] = str(record.seq)
 
     return records
 

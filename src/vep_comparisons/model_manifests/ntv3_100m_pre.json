@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "model": "ntv3-100m-pre",
+  "weights": {
+    "repository": "InstaDeepAI/NTv3_100M_pre",
+    "revision": "5c685dca15891f5c5b80e0c930e23b87a217e441",
+    "sha256": {
+      "config.json": "c79343c3183cbb7f36ce082d8e2bf7c7bd348501204eaa44ba9f9bd5358bf43d",
+      "model.safetensors": "8504dd659224628df906d6a876a8975e284fc9f75d194f2ca2bd9e98d4000ed2",
+      "tokenizer_config.json": "07019b4b8964bc28c08c23bf1e1704a2dcdf686d1b99ad211008429b34d1d0fb",
+      "vocab.json": "dafebcb0654e403cc30269f52bed31f07fd8c55a1370be63a54d82b917c61153"
+    }
+  },
+  "code": {
+    "repository": "InstaDeepAI/ntv3_base_model",
+    "revision": "0ecff3637f0d3ba5b686d1095083218157c2ca34",
+    "sha256": {
+      "configuration_ntv3_pretrained.py": "e210b5ec18ebe626d8dd91b408a83fc20afc59bf6c5382084ee91b9b8be69df3",
+      "modeling_ntv3_pretrained.py": "bc2157369fd9c73cc24323be8c38943871a2a7f1aaa1ca92a8945c1a65c4757a",
+      "tokenization_ntv3.py": "59e507620a65cebaab59e977c8f2840ff2f208f0f1a6ec38ece6b53cb3eebda3"
+    }
+  },
+  "expected": {
+    "alphabet_size": 11,
+    "num_downsamples": 7,
+    "token_ids": {
+      "<unk>": 0,
+      "<pad>": 1,
+      "<mask>": 2,
+      "<cls>": 3,
+      "<eos>": 4,
+      "<bos>": 5,
+      "A": 6,
+      "T": 7,
+      "C": 8,
+      "G": 9,
+      "N": 10
+    }
+  },
+  "license": "non-commercial use only",
+  "status": "Validated gated code snapshot ready for offline inference."
+}

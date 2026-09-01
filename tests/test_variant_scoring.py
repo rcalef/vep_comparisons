@@ -130,11 +130,13 @@ def test_fasta_removes_versions_and_rejects_duplicate_ids(
             "TX000002.1 more metadata": "MNP",
         },
     )
-    assert read_transcript_fasta(fasta) == {
+    records = read_transcript_fasta(fasta)
+    assert records == {
         "ENST000001": "ACD",
         "ENST000003": "EFG",
         "TX000002": "MNP",
     }
+    assert all(isinstance(sequence, str) for sequence in records.values())
 
     duplicate = tmp_path / "duplicate.fa"
     duplicate.write_text(
