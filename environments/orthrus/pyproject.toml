@@ -1,0 +1,52 @@
+[project]
+name = "vep-comparisons-orthrus-environment"
+version = "0.1.0"
+description = "Isolated inference environment for the Orthrus RNA MLM scorer"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "causal-conv1d==1.2.0.post2",
+    "mamba-ssm==1.2.0.post1",
+    "numpy==1.26.4",
+    "safetensors==0.4.5",
+    "torch==2.2.2",
+    "transformers==4.45.2",
+]
+
+[tool.uv]
+package = false
+preview-features = ["extra-build-dependencies"]
+
+# Both CUDA extensions import Torch from setup.py but do not declare it as a
+# build dependency. uv supplies the exact runtime Torch in their isolated build
+# environments, making `uv sync` sufficient without manual install ordering.
+[tool.uv.extra-build-dependencies]
+causal-conv1d = [
+    { requirement = "torch", match-runtime = true },
+    "packaging",
+    "ninja",
+]
+mamba-ssm = [
+    { requirement = "torch", match-runtime = true },
+    "packaging",
+    "ninja",
+]
+
+# These older source distributions compute metadata dynamically by importing
+# Torch. Supplying their published requirements lets uv resolve first and then
+# build them with the augmented, runtime-matched environments above.
+[[tool.uv.dependency-metadata]]
+name = "causal-conv1d"
+version = "1.2.0.post2"
+requires-dist = ["torch", "packaging", "ninja"]
+
+[[tool.uv.dependency-metadata]]
+name = "mamba-ssm"
+version = "1.2.0.post1"
+requires-dist = [
+    "torch",
+    "packaging",
+    "ninja",
+    "einops",
+    "triton",
+    "transformers",
+]
