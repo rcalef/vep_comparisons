@@ -18,7 +18,7 @@ def _():
 
 @app.cell
 def _(Path):
-    data_dir = Path("/orcd/data/manoli/001/rcalef/data/vep_comparisons/")
+    data_dir = Path("/path/to/vep_comparisons/")
 
     dataset_dir = data_dir / "variants" / "clinvar"
     vcf_path = dataset_dir / "clinvar_20260208.vcf.gz"
@@ -251,7 +251,7 @@ def _(mo):
     Given the variants of interest above, their consequence on transcripts was predicted using Ensembl's VEP tool. The tool was run as follows:
     ```bash
     vep \
-            -i /storage/data/clinvar/20260208/clinvar_20260208.filtered.vcf.gz \
+            -i /path/to/clinvar/20260208/clinvar_20260208.filtered.vcf.gz \
             --mane \
             --canonical \
             --af_gnomade \
@@ -263,10 +263,10 @@ def _(mo):
             --compress_output gzip \
             --cache \
             --force_overwrite \
-            --dir /storage/vep/ \
+            --dir /path/to/vep/ \
             --fork 8 \
             --verbose \
-            -o /storage/projects/rna_localization/variants/clinvar/variant_effect_output.txt.gz \
+            -o /path/to/rna_localization/variants/clinvar/variant_effect_output.txt.gz \
             2>&1 | tee run.log
     ```
     annotations were sourced using the version 115 of the GRCh38 cache (i.e. GENCODE 49).
@@ -638,7 +638,7 @@ def _(silent_vars, silent_vars_path):
 
 @app.cell
 def _(pd):
-    parsed_variants = pd.read_parquet("/orcd/data/manoli/001/rcalef/projects/rna_localization/variants/clinvar/clinvar_variants_dataset.parquet")
+    parsed_variants = pd.read_parquet("/path/to/rna_localization/variants/clinvar/clinvar_variants_dataset.parquet")
     parsed_variants.head()
     return (parsed_variants,)
 

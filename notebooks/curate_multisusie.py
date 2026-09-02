@@ -15,7 +15,7 @@ def _():
 
 @app.cell
 def _(Path):
-    data_dir = Path("/orcd/data/manoli/001/rcalef/data/vep_comparisons/")
+    data_dir = Path("/path/to/vep_comparisons/")
     dataset_dir = data_dir / "variants" / "multisusie"
     return (dataset_dir,)
 
@@ -134,7 +134,7 @@ def _(mo):
     command for transcript selection and low-PIP downsampling:
 
     ```bash
-    dataset_dir="/storage/data/vep_comparisons/variants/multisusie"
+    dataset_dir="/path/to/vep_comparisons/variants/multisusie"
 
     vep \
       -i "${dataset_dir}/vep/filtered_variants.for_vep.tsv.gz" \
@@ -150,9 +150,9 @@ def _(mo):
       --symbol \
       --compress_output gzip \
       --cache \
-      --dir_cache /storage/data/assemblies/hg38/vep \
+      --dir_cache /path/to/assemblies/hg38/vep \
       --force_overwrite \
-      --dir /storage/vep/ \
+      --dir /path/to/vep/ \
       --fork 8 \
       --verbose \
       -o "${dataset_dir}/vep/variant_effect_output.txt.gz" \

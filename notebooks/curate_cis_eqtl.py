@@ -16,7 +16,7 @@ def _():
 
 @app.cell
 def _(Path):
-    data_dir = Path("/orcd/data/manoli/001/rcalef/data/vep_comparisons/variants/cis_eqtl")
+    data_dir = Path("/path/to/vep_comparisons/variants/cis_eqtl")
 
     raw_data_dir = data_dir / "GTEx_Analysis_v11_eQTL"
 

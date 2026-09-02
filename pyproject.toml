@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Workflows for curating and comparing variant effect predictions"
 readme = "README.md"
 authors = [
-    { name = "Robert Calef", email = "robert.calef@gmail.com" }
+    { name = "Anonymous", email = "user@example.com" }
 ]
 requires-python = ">=3.13,<3.14"
 dependencies = [

@@ -59,7 +59,7 @@ def _():
 
 @app.cell
 def _(Path):
-    data_dir = Path("/orcd/data/manoli/001/rcalef/data/vep_comparisons/variants")
+    data_dir = Path("/path/to/vep_comparisons/variants")
 
     variants_path = data_dir / "collated_variants.annotated.tsv.gz"
     return (variants_path,)
@@ -911,7 +911,7 @@ def _(mo):
 def _(pl):
     esmc_scores = (
         pl.read_csv(
-            "/orcd/data/manoli/001/rcalef/projects/vep_comparisons/scoring/collated_variants.esmc_300m.tsv.gz",
+            "/path/to/vep_comparisons/scoring/collated_variants.esmc_300m.tsv.gz",
             separator="\t",
         )
         # Original scores are log(ref) - log(alt), so negate

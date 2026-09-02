@@ -21,7 +21,7 @@ def _(Path, os):
     data_dir = Path(
         os.environ.get(
             "VEP_COMPARISONS_VARIANTS_DIR",
-            "/orcd/data/manoli/001/rcalef/data/vep_comparisons/variants",
+            "/path/to/vep_comparisons/variants",
         )
     )
 

@@ -89,7 +89,7 @@ one local checkpoint on complete protein sequences. Install its isolated model
 stack with `uv sync --extra protein-models`. For example:
 
 ```bash
-export MAGNETON_MODEL_DIR=/orcd/data/manoli/001/om/rcalef/model_weights
+export MAGNETON_MODEL_DIR=/path/to/model_weights
 
 score-protein-variants \
   --variants final_variants.tsv.gz \
@@ -122,7 +122,7 @@ recover-saprot-structures \
   --existing-tokens scoring/filtered_foldseek_toks.fa.bz2 \
   --output-dir scoring/saprot_recovery \
   --variants final_variants.tsv.gz \
-  --foldseek ~/install/foldseek/bin/foldseek \
+  --foldseek /path/to/foldseek/bin/foldseek \
   --threads 8
 ```
 
