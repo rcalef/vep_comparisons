@@ -6,12 +6,12 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    from concurrent.futures import ThreadPoolExecutor, as_completed
     import math
     import os
-    from pathlib import Path
     import re
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from pathlib import Path
 
     import marimo as mo
     import polars as pl
@@ -508,7 +508,6 @@ def _(
         ]
     )
     coverage_summary
-    return
 
 
 @app.cell
@@ -526,7 +525,6 @@ def _(
         }
     )
     source_timings, roulette_chromosome_timings
-    return
 
 
 @app.cell
@@ -587,7 +585,6 @@ def _(annotated, annotated_path, collated, pl):
         raise ValueError("Reread output row order differs from the input")
     print(f"Wrote and verified {annotated_path} ({reread.height:,} rows)")
     annotated_path
-    return
 
 
 @app.cell
@@ -609,7 +606,6 @@ def _(ANNOTATION_COLUMNS, annotated, mo, pl):
             ),
         ]
     )
-    return
 
 
 if __name__ == "__main__":

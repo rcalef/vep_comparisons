@@ -8,9 +8,13 @@ from pathlib import Path
 import pytest
 import torch
 
-from vep_comparisons.dna_variant_scoring import ShardCompatibilityError
-from vep_comparisons.orthrus_scoring import OrthrusCandidate, PreparedRequest, TranscriptAnnotation
-from vep_comparisons.rinalmo_scoring import (
+from vep_comparisons.dna.workflow import ShardCompatibilityError
+from vep_comparisons.rna.common import (
+    OrthrusCandidate,
+    PreparedRequest,
+    TranscriptAnnotation,
+)
+from vep_comparisons.rna.rinalmo.workflow import (
     MAX_MODEL_TOKENS,
     OUTPUT_COLUMNS,
     TOKEN_IDS,
@@ -22,7 +26,6 @@ from vep_comparisons.rinalmo_scoring import (
     read_rinalmo_annotations,
     score_rinalmo_variants,
     select_transcript_window,
-    sha256_file,
     validate_rinalmo_checkpoint,
 )
 
@@ -125,13 +128,10 @@ def write_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return variants, fasta, gff
 
 
-def make_weights(tmp_path: Path) -> tuple[Path, Path]:
+def make_weights(tmp_path: Path) -> Path:
     weights = tmp_path / "rinalmo_giga_pretrained.pt"
     weights.write_bytes(b"fake giga")
-    expected = {"config_name": "giga", "embed_dim": 1280, "num_blocks": 33, "num_heads": 20, "alphabet_size": 22, "tokens": list(TOKENS), "token_ids": TOKEN_IDS}
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"model": "rinalmo-giga", "repository": "lbcb-sci/RiNALMo", "revision": "2c2c5c14a5ae609d8c560a5d9ca32e51e0288955", "sha256": {weights.name: sha256_file(weights)}, "expected": expected}))
-    return weights, manifest
+    return weights
 
 
 class FakeScorer:
@@ -143,19 +143,17 @@ class FakeScorer:
         return result
 
 
-def test_no_cds_parsing_checkpoint_pipeline_resume_and_collation(tmp_path: Path) -> None:
+def test_no_cds_parsing_scoring_and_collation(tmp_path: Path) -> None:
     variants, fasta, gff = write_fixture(tmp_path)
     annotations = read_rinalmo_annotations(gff, fasta, {"P", "M"})
     assert annotations["M"].genomic_position(1) == 21
-    weights, manifest = make_weights(tmp_path)
-    assert validate_rinalmo_checkpoint(weights, manifest)["model"] == "rinalmo-giga"
+    weights = make_weights(tmp_path)
+    assert validate_rinalmo_checkpoint(weights) == weights
     output_dir = tmp_path / "shards"
     for index in range(2):
-        score_rinalmo_variants(variants_path=variants, transcript_fasta_path=fasta, gff3_path=gff, weights=weights, manifest_path=manifest, output_dir=output_dir, num_shards=2, shard_index=index, device="cpu", dtype="float32", model_factory=lambda *args: FakeScorer())
-    reused = score_rinalmo_variants(variants_path=variants, transcript_fasta_path=fasta, gff3_path=gff, weights=weights, manifest_path=manifest, output_dir=output_dir, num_shards=2, shard_index=0, device="cpu", dtype="float32", model_factory=lambda *args: pytest.fail("loaded model"))
-    assert reused.reused
+        score_rinalmo_variants(variants_path=variants, transcript_fasta_path=fasta, gff3_path=gff, weights=weights, output_dir=output_dir, num_shards=2, shard_index=index, device="cpu", dtype="float32", model_factory=lambda *args: FakeScorer())
     final = tmp_path / "final.tsv.gz"
-    collate_rinalmo_scores(variants_path=variants, transcript_fasta_path=fasta, gff3_path=gff, weights=weights, manifest_path=manifest, output_dir=output_dir, output_path=final, num_shards=2, dtype="float32")
+    collate_rinalmo_scores(variants_path=variants, transcript_fasta_path=fasta, gff3_path=gff, weights=weights, output_dir=output_dir, output_path=final, num_shards=2, dtype="float32")
     with gzip.open(final, "rt", newline="") as handle:
         rows = list(csv.DictReader(handle, delimiter="\t"))
     assert tuple(rows[0]) == OUTPUT_COLUMNS
@@ -163,26 +161,3 @@ def test_no_cds_parsing_checkpoint_pipeline_resume_and_collation(tmp_path: Path)
     assert rows[1]["transcript_ref"] == "C"
     assert rows[1]["transcript_alt"] == "T"
     assert rows[0]["score"] == "1.0"
-    metadata = json.loads(final.with_suffix(".json").read_text())
-    assert metadata["identity"]["dtype"] == "float32"
-    assert metadata["ineligible_counts"] == {"missing_cdna_position": 1}
-    with pytest.raises(ShardCompatibilityError, match="incompatible"):
-        collate_rinalmo_scores(variants_path=variants, transcript_fasta_path=fasta, gff3_path=gff, weights=weights, manifest_path=manifest, output_dir=output_dir, output_path=final, num_shards=2, dtype="bfloat16")
-
-
-def test_checkpoint_hash_architecture_and_alphabet_failures(tmp_path: Path) -> None:
-    weights, manifest = make_weights(tmp_path)
-    weights.write_bytes(b"changed")
-    with pytest.raises(ValueError, match="hash mismatch"):
-        validate_rinalmo_checkpoint(weights, manifest)
-    weights.write_bytes(b"fake giga")
-    payload = json.loads(manifest.read_text())
-    payload["expected"]["num_blocks"] = 32
-    manifest.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="architecture"):
-        validate_rinalmo_checkpoint(weights, manifest)
-    payload["expected"]["num_blocks"] = 33
-    payload["expected"]["token_ids"]["A"] = 6
-    manifest.write_text(json.dumps(payload))
-    with pytest.raises(ValueError, match="alphabet"):
-        validate_rinalmo_checkpoint(weights, manifest)

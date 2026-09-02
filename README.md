@@ -85,7 +85,8 @@ show their corresponding VEP and curation invocations:
 ## Protein variant scoring
 
 `score-protein-variants` performs inference-only, masked-marginal scoring with
-one local checkpoint on complete protein sequences. For example:
+one local checkpoint on complete protein sequences. Install its isolated model
+stack with `uv sync --extra protein-models`. For example:
 
 ```bash
 export MAGNETON_MODEL_DIR=/orcd/data/manoli/001/om/rcalef/model_weights
@@ -155,3 +156,143 @@ The command atomically writes `<output>.tsv.gz` with columns `variant`, `gene`,
 single-process and non-resumable. `float32` is the default; use `--dtype` to
 explicitly request `bfloat16` or `float16`. `--batch-size` controls the number
 of masked protein positions evaluated per forward pass and defaults to `1`.
+
+## NTv3 genomic SNV scoring
+
+`score-dna-variants` implements offline, masked-marginal scoring with the pinned
+`InstaDeepAI/NTv3_100M_pre` weights. It emits signed ALT-minus-REF logits for
+both reference orientations, their mean, and a fixed-length gene-aware context
+when the complete GENCODE gene fits with the requested variant margin. Rows
+whose ALT allele is not A, C, G, or T are filtered and counted in the run
+manifest.
+
+The default is an 8,192-nt centered window. Omit `--genes` for centered-only
+scoring; supplying a GTF additionally enables the gene-aware columns. Window
+lengths can be changed with `--window-length` and must be divisible by 128.
+
+Place the weights and gated custom-code snapshots under one directory and set
+`NTV3_MODEL_ROOT`; the scorer validates every pinned file hash before importing
+the model code. The checked-in manifest already pins and hashes the available
+weights. Access to the gated code repository is still required once: check out
+the manifest's code revision and replace its three `GATED_SNAPSHOT_REQUIRED`
+values with SHA-256 hashes of the local files.
+
+```bash
+export NTV3_MODEL_ROOT=/path/to/model_weights
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+uv run --extra ntv3 score-dna-variants \
+  --variants collated_variants.tsv.gz \
+  --reference hg38.fa.gz \
+  --output-dir scoring/ntv3_100m_pre \
+  --num-shards 32 --shard-index 0
+
+uv run collate-dna-variant-scores \
+  --variants collated_variants.tsv.gz \
+  --input-dir scoring/ntv3_100m_pre \
+  --num-shards 32 \
+  --output scoring/ntv3_100m_pre.tsv.gz
+```
+
+The raw `score` is model preference for ALT over REF, not a calibrated
+pathogenicity probability. The NTv3 license limits model use and derived
+outputs to non-commercial use.
+
+## Orthrus transcript RNA scoring
+
+`score-orthrus-variants` scores mature GENCODE transcripts with the local
+`antichronology/orthrus-mlm-6-track` checkpoint. It constructs the model's four
+nucleotide channels plus CDS-codon-start and exon-end splice channels directly
+from a transcript FASTA and GFF3. The genomic alleles are complemented on
+minus-strand transcripts. At the requested one-based `cdna_position`, only the
+four nucleotide channels are masked; the CDS and splice values are retained.
+
+Orthrus's Mamba dependencies are incompatible with the main Python 3.13
+environment. Its standalone uv project pins Python 3.10 and supplies the exact
+runtime Torch as a build dependency for both CUDA extensions. With a CUDA
+toolkit (`nvcc`) available, create the complete environment in one command:
+
+```bash
+uv sync --project environments/orthrus --frozen
+export PYTHONPATH="$PWD/src"
+```
+
+The scorer is offline-only and validates the checkpoint Git revision and every
+pinned file hash before model loading. It uses float32, defaults to CUDA and a
+batch size of 32, and buckets causal transcript-prefix requests by length. It
+does not truncate or window long transcripts.
+
+```bash
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH="$PWD/src"
+uv run --project environments/orthrus --frozen \
+  python -m vep_comparisons.score_orthrus_variants_cli \
+  --variants collated_variants.tsv.gz \
+  --transcripts gencode.v50.transcripts.fa.gz \
+  --gff3 gencode.v50.annotation.gff3.gz \
+  --checkpoint /path/to/orthrus-mlm-6-track \
+  --output-dir scoring/orthrus_mlm_6_track \
+  --num-shards 32 --shard-index 0
+
+uv run --project environments/orthrus --frozen \
+  python -m vep_comparisons.collate_orthrus_scores_cli \
+  --variants collated_variants.tsv.gz \
+  --transcripts gencode.v50.transcripts.fa.gz \
+  --gff3 gencode.v50.annotation.gff3.gz \
+  --checkpoint /path/to/orthrus-mlm-6-track \
+  --input-dir scoring/orthrus_mlm_6_track \
+  --num-shards 32 \
+  --output scoring/orthrus_mlm_6_track.tsv.gz
+```
+
+Only rows with an integer cDNA position and single A/C/G/T REF and ALT are
+published. Metadata records excluded-row aggregates. Output includes genomic
+and transcript-oriented alleles, REF and ALT log-probabilities, and
+`score = log P(ALT) - log P(REF)`. The Slurm array helper is
+`scripts/score_collated_variants_orthrus.sh`; collation remains a separate,
+explicit step after the array completes.
+
+## RiNALMo-giga transcript RNA scoring
+
+`score-rinalmo-variants` applies masked-marginal scoring with only nucleotide
+tokens from the official 650M RiNALMo `giga` checkpoint. GENCODE transcript
+FASTA and GFF3 files remain authoritative for sequence, strand, exon geometry,
+and cDNA-to-genomic validation; CDS features and annotation channels are not
+used. Genomic alleles are complemented for minus-strand transcripts.
+
+The standalone environment pins Python 3.11, CUDA 12.4 Torch 2.6.0,
+FlashAttention 2.6.3, and the verified RiNALMo source revision. Build it with:
+
+```bash
+uv sync --project environments/rinalmo --frozen
+export PYTHONPATH="$PWD/src"
+```
+
+The checked-in manifest verifies the source pin, exact 22-token alphabet,
+giga architecture, and `rinalmo_giga_pretrained.pt` SHA-256 before loading.
+`bfloat16` is the default; `float16` and `float32` are also accepted. Standard
+attention is selected automatically for CPU and float32 inference.
+
+```bash
+uv run --project environments/rinalmo --frozen \
+  python -m vep_comparisons.score_rinalmo_variants_cli \
+  --variants collated_variants.tsv.gz \
+  --transcripts gencode.v50.transcripts.fa.gz \
+  --gff3 gencode.v50.annotation.gff3.gz \
+  --weights /path/to/rinalmo_giga_pretrained.pt \
+  --output-dir scoring/rinalmo_giga \
+  --num-shards 32 --shard-index 0 --dtype bfloat16
+
+uv run --project environments/rinalmo --frozen \
+  python -m vep_comparisons.collate_rinalmo_scores_cli \
+  --variants collated_variants.tsv.gz \
+  --transcripts gencode.v50.transcripts.fa.gz \
+  --gff3 gencode.v50.annotation.gff3.gz \
+  --weights /path/to/rinalmo_giga_pretrained.pt \
+  --input-dir scoring/rinalmo_giga --num-shards 32 \
+  --dtype bfloat16 --output scoring/rinalmo_giga.tsv.gz
+```
+
+Inputs longer than the 1,024-token pretraining context are cropped around the
+target using a fixed deterministic policy. CLS and EOS are included only when
+the crop reaches the true transcript boundary. Every row records the half-open
+transcript crop and total token count. The Slurm array helper is
+`scripts/score_collated_variants_rinalmo.sh`; collation is a separate step.

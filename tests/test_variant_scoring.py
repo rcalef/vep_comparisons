@@ -7,16 +7,16 @@ import polars as pl
 import pytest
 import torch
 
-from vep_comparisons.variant_models import (
-    ESMCVariantModel,
+from vep_comparisons.protein.models import (
     MODEL_REGISTRY,
+    ESMCVariantModel,
     PositionRequest,
     SaProtVariantModel,
     batch_requests,
     log_odds_from_logits,
     marginalized_log_odds_from_logits,
 )
-from vep_comparisons.variant_scoring import (
+from vep_comparisons.protein.workflow import (
     Candidate,
     InputValidationError,
     aggregate_position_scores,
@@ -26,7 +26,6 @@ from vep_comparisons.variant_scoring import (
     sigmoid_window_weight,
     tile_window_starts,
 )
-from vep_comparisons.score_variants_cli import run_cli
 
 
 def _write_variants(path: Path, rows: list[dict[str, str]]) -> None:
@@ -532,27 +531,18 @@ def test_saprot_can_ignore_only_missing_structure_transcripts(
     _write_fasta(structures, {"ENST000001": "pyn"})
     fake = FakeModel()
 
-    exit_code = run_cli(
-        [
-            "--variants",
-            str(variants),
-            "--sequences",
-            str(sequences),
-            "--structure-tokens",
-            str(structures),
-            "--ignore-missing-structure-tokens",
-            "--model",
-            "saprot-35m",
-            "--model-dir",
-            str(tmp_path),
-            "--output",
-            str(output),
-        ],
+    score_protein_variants(
+        variants_path=variants,
+        sequences_path=sequences,
+        structure_tokens_path=structures,
+        ignore_missing_structure_tokens=True,
+        model_name="saprot-35m",
+        model_root=tmp_path,
+        output=output,
         model_factory=_factory_for(fake, []),
     )
 
     result = pl.read_csv(output, separator="\t")
-    assert exit_code == 0
     assert result.get_column("variant").to_list() == ["scored"]
     assert [request.transcript for request in fake.requests] == ["ENST000001"]
     assert "Ignored 1 candidate(s) across 1 transcript(s)" in caplog.text
@@ -637,31 +627,6 @@ def test_invalid_long_sequence_mode_fails_before_model_loading(
     assert calls == []
 
 
-def test_cli_rejects_invalid_mode_and_window_length(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    required = [
-        "--variants",
-        str(tmp_path / "variants.tsv.gz"),
-        "--sequences",
-        str(tmp_path / "sequences.fa"),
-        "--model",
-        "esmc-300m",
-        "--model-dir",
-        str(tmp_path),
-        "--output",
-        str(tmp_path / "scores.tsv.gz"),
-    ]
-    with pytest.raises(SystemExit) as error:
-        run_cli(required + ["--long-sequence-mode", "invalid"])
-    assert error.value.code == 2
-    assert "invalid choice" in capsys.readouterr().err
-
-    assert run_cli(required + ["--max-sequence-length", "2047"]) == 2
-    assert "invalid_max_sequence_length" in capsys.readouterr().err
-
-
 def test_masked_marginal_math_and_fixed_size_batching() -> None:
     logits = [0.0, -2.0, 3.0, 1.0, 2.0]
     assert log_odds_from_logits(logits, ref_token=1, alt_token=2) == 5.0
@@ -686,7 +651,7 @@ def test_masked_marginal_math_and_fixed_size_batching() -> None:
         batch_requests(requests, 0)
 
 
-def test_cli_with_fake_adapter_writes_output_and_reports_to_stderr(
+def test_scoring_with_fake_adapter_writes_output_and_reports_to_stderr(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     variants = tmp_path / "variants.tsv.gz"
@@ -695,26 +660,17 @@ def test_cli_with_fake_adapter_writes_output_and_reports_to_stderr(
     _write_variants(variants, [_row("v", "ENST000001", 1, "A/C")])
     _write_fasta(sequences, {"ENST000001": "ACD"})
 
-    exit_code = run_cli(
-        [
-            "--variants",
-            str(variants),
-            "--sequences",
-            str(sequences),
-            "--model",
-            "esmc-300m",
-            "--model-dir",
-            str(tmp_path),
-            "--output",
-            str(output),
-            "--batch-size",
-            "2",
-        ],
+    score_protein_variants(
+        variants_path=variants,
+        sequences_path=sequences,
+        model_name="esmc-300m",
+        model_root=tmp_path,
+        output=output,
+        batch_size=2,
         model_factory=_factory_for(FakeModel(), []),
     )
 
     stderr = capsys.readouterr().err
-    assert exit_code == 0
     assert output.exists()
     assert "model=esmc-300m" in stderr
     assert "unique_positions=1 window_requests=1" in stderr

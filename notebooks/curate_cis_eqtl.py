@@ -96,7 +96,6 @@ def _(paths, pl):
 @app.cell
 def _(all_variants):
     all_variants.head()
-    return
 
 
 @app.cell
@@ -109,7 +108,6 @@ def _(all_variants):
 @app.cell
 def _(sns, tissues_per_qtl):
     sns.barplot(x="num_tissues", y="count", data=tissues_per_qtl)
-    return
 
 
 @app.cell
@@ -205,7 +203,6 @@ def _(all_variants, pl):
 @app.cell
 def _(deduped_variants):
     deduped_variants.get_column("label").value_counts()
-    return
 
 
 @app.cell
@@ -219,7 +216,6 @@ def _(data_dir, deduped_variants):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell
@@ -258,7 +254,6 @@ def _(data_dir, vep_variants):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell
@@ -278,7 +273,6 @@ def _(pl, vep_filtered):
         .get_column("consequence")
         .value_counts(sort=True)
     )
-    return
 
 
 @app.cell
@@ -292,7 +286,6 @@ def _(pl, vep_filtered):
         .get_column("consequence")
         .value_counts(sort=True)
     )
-    return
 
 
 @app.cell

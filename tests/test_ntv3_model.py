@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import torch
 from pathlib import Path
 
-from vep_comparisons.ntv3_model import EXPECTED_VOCABULARY, NTv3Model, _load_code_package
-from vep_comparisons.score_dna_variants_cli import parse_args
+import torch
+
+from vep_comparisons.cli import parse_args
+from vep_comparisons.dna.ntv3 import EXPECTED_VOCABULARY, NTv3Model, _load_code_package
 
 
 class FakeTokenizer:
@@ -67,9 +68,11 @@ def test_local_code_package_does_not_execute_unpinned_initializer(tmp_path: Path
     assert helper.VALUE == 17
 
 
-def test_cli_defaults_to_8192_centered_only() -> None:
+def test_unified_cli_defaults_to_8192_centered_only() -> None:
     args = parse_args(
         [
+            "dna",
+            "score",
             "--variants",
             "variants.tsv.gz",
             "--reference",

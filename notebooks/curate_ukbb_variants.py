@@ -80,7 +80,6 @@ def _(dataset_dir, pass_variants, pl):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell
@@ -163,7 +162,6 @@ def _(dataset_dir, selected_variants):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell
@@ -200,7 +198,6 @@ def _(dataset_dir, vep_variants):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell(hide_code=True)
@@ -240,7 +237,6 @@ def _(mo):
       --output-prefix "${dataset_dir}/final_UKBB_94traits_release1.hg38"
     ```
     """)
-    return
 
 
 if __name__ == "__main__":

@@ -8,7 +8,8 @@ from pathlib import Path
 import pysam
 import pytest
 
-from vep_comparisons.dna_variant_scoring import (
+from vep_comparisons.dna.ntv3 import EXPECTED_VOCABULARY, validate_model_package
+from vep_comparisons.dna.workflow import (
     OUTPUT_COLUMNS,
     CandidatePlan,
     DnaCandidate,
@@ -31,11 +32,9 @@ from vep_comparisons.dna_variant_scoring import (
     reverse_complement,
     score_dna_variants,
     shard_variant_ids,
-    sha256_file,
     validate_and_resolve_candidates,
     validate_window_policy,
 )
-from vep_comparisons.ntv3_model import EXPECTED_VOCABULARY, validate_model_package
 
 
 class FakeReference:
@@ -87,7 +86,7 @@ def write_reference(path: Path, sequence: str) -> None:
     pysam.faidx(str(path))
 
 
-def make_model_package(tmp_path: Path) -> tuple[Path, Path, Path]:
+def make_model_package(tmp_path: Path) -> tuple[Path, Path]:
     weights = tmp_path / "weights"
     code = tmp_path / "code"
     weights.mkdir()
@@ -110,27 +109,7 @@ def make_model_package(tmp_path: Path) -> tuple[Path, Path, Path]:
         "tokenization_ntv3.py",
     ):
         (code / name).write_text(f"# {name}\n")
-    manifest = {
-        "model": "ntv3-100m-pre",
-        "weights": {
-            "repository": "weights",
-            "revision": "1" * 40,
-            "sha256": {name: sha256_file(weights / name) for name in ("config.json", "model.safetensors", "tokenizer_config.json", "vocab.json")},
-        },
-        "code": {
-            "repository": "code",
-            "revision": "2" * 40,
-            "sha256": {name: sha256_file(code / name) for name in ("configuration_ntv3_pretrained.py", "modeling_ntv3_pretrained.py", "tokenization_ntv3.py")},
-        },
-        "expected": {
-            "alphabet_size": 11,
-            "num_downsamples": 7,
-            "token_ids": EXPECTED_VOCABULARY,
-        },
-    }
-    manifest_path = tmp_path / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest))
-    return weights, code, manifest_path
+    return weights, code
 
 
 class FakeModel:
@@ -232,7 +211,7 @@ def test_multi_gene_plans_reuse_centered_and_deduplicate_shifted_contexts() -> N
     assert len(contexts) == 2  # one centered and one identical shifted request
 
 
-def test_candidate_and_gtf_validation_aggregates_failures(tmp_path: Path) -> None:
+def test_candidate_and_gtf_validation_fail_immediately(tmp_path: Path) -> None:
     variants = tmp_path / "variants.tsv.gz"
     write_variants(
         variants,
@@ -243,10 +222,8 @@ def test_candidate_and_gtf_validation_aggregates_failures(tmp_path: Path) -> Non
         ],
     )
     reference = FakeReference({"chr1": "A" * 10})
-    with pytest.raises(InputValidationError) as caught:
+    with pytest.raises(InputValidationError, match="identical_alleles"):
         validate_and_resolve_candidates(read_dna_candidates(variants), reference)
-    categories = {issue.category for issue in caught.value.issues}
-    assert categories == {"reference_mismatch", "invalid_allele", "identical_alleles"}
 
     gtf = tmp_path / "genes.gtf.gz"
     write_gtf(
@@ -296,16 +273,7 @@ def test_fake_score_arithmetic_and_centered_gene_copy() -> None:
     assert rows[0]["gene_score"] == 3.0
 
 
-def test_manifest_validation_checks_hashes(tmp_path: Path) -> None:
-    weights, code, manifest = make_model_package(tmp_path)
-    result = validate_model_package(weights, code, manifest)
-    assert result["weights"]["revision"] == "1" * 40
-    (code / "tokenization_ntv3.py").write_text("changed")
-    with pytest.raises(ValueError, match="hash mismatch"):
-        validate_model_package(weights, code, manifest)
-
-
-def test_multishard_scoring_resume_collation_and_incompatibility(tmp_path: Path) -> None:
+def test_multishard_scoring_and_collation(tmp_path: Path) -> None:
     reference = tmp_path / "reference.fa"
     variants = tmp_path / "variants.tsv.gz"
     genes = tmp_path / "genes.gtf.gz"
@@ -326,7 +294,7 @@ def test_multishard_scoring_resume_collation_and_incompatibility(tmp_path: Path)
             GeneSpan("G3", "chr1", 100, 300, "+"),
         ],
     )
-    weights, code, manifest = make_model_package(tmp_path)
+    weights, code = make_model_package(tmp_path)
     output_dir = tmp_path / "shards"
     models: list[FakeModel] = []
 
@@ -345,7 +313,6 @@ def test_multishard_scoring_resume_collation_and_incompatibility(tmp_path: Path)
                 model_dir=weights,
                 model_code_dir=code,
                 output_dir=output_dir,
-                manifest_path=manifest,
                 window_length=128,
                 min_variant_margin=10,
                 batch_size=2,
@@ -357,29 +324,11 @@ def test_multishard_scoring_resume_collation_and_incompatibility(tmp_path: Path)
         )
     assert sum(summary.candidates for summary in summaries) == 4
     assert sum(summary.unique_variants for summary in summaries) == 3
-    reused = score_dna_variants(
-        variants_path=variants,
-        reference_path=reference,
-        genes_path=genes,
-        model_dir=weights,
-        model_code_dir=code,
-        output_dir=output_dir,
-        manifest_path=manifest,
-        window_length=128,
-        min_variant_margin=10,
-        batch_size=99,  # batch size is operational and does not invalidate a completed shard
-        device="cpu",
-        num_shards=2,
-        shard_index=0,
-        model_factory=factory,
-    )
-    assert reused.reused and len(models) == 2
-
     final = tmp_path / "final.tsv.gz"
-    output, metadata = collate_dna_scores(
+    output = collate_dna_scores(
         variants_path=variants, output_dir=output_dir, output_path=final, num_shards=2
     )
-    assert output == final and metadata.is_file()
+    assert output == final
     with gzip.open(final, "rt") as handle:
         result = list(csv.DictReader(handle, delimiter="\t"))
     assert [(row["variant"], row["gene"]) for row in result] == [
@@ -388,21 +337,6 @@ def test_multishard_scoring_resume_collation_and_incompatibility(tmp_path: Path)
     assert tuple(result[0]) == OUTPUT_COLUMNS
     assert result[3]["gene_context_status"] == "missing_gene_span"
     assert result[3]["gene_score"] == ""
-    first_metadata = json.loads(summaries[0].metadata_path.read_text())
-    assert first_metadata["counts"]["filtered_invalid_alt_candidates"] == 1
-    assert first_metadata["counts"]["filtered_invalid_alt_counts"] == {".": 1}
-
-    shard_meta = summaries[1].metadata_path
-    payload = json.loads(shard_meta.read_text())
-    payload["run_identity"]["window_length"] = 256
-    shard_meta.write_text(json.dumps(payload))
-    with pytest.raises(ShardCompatibilityError, match="incompatible"):
-        collate_dna_scores(
-            variants_path=variants,
-            output_dir=output_dir,
-            output_path=tmp_path / "bad.tsv.gz",
-            num_shards=2,
-        )
 
 
 def test_inference_failure_leaves_no_shard_files(tmp_path: Path) -> None:
@@ -412,7 +346,7 @@ def test_inference_failure_leaves_no_shard_files(tmp_path: Path) -> None:
     write_reference(reference, "A" * 200)
     write_variants(variants, [candidate(50)])
     write_gtf(genes, [GeneSpan("ENSG1", "chr1", 20, 80, "+")])
-    weights, code, manifest = make_model_package(tmp_path)
+    weights, code = make_model_package(tmp_path)
     output_dir = tmp_path / "output"
     with pytest.raises(RuntimeError, match="simulated"):
         score_dna_variants(
@@ -422,7 +356,6 @@ def test_inference_failure_leaves_no_shard_files(tmp_path: Path) -> None:
             model_dir=weights,
             model_code_dir=code,
             output_dir=output_dir,
-            manifest_path=manifest,
             window_length=128,
             min_variant_margin=10,
             device="cpu",
@@ -442,7 +375,7 @@ def test_centered_only_scoring_needs_no_gtf_or_gene_margin(tmp_path: Path) -> No
             candidate(60, variant="filtered", alt=".", input_index=1),
         ],
     )
-    weights, code, manifest = make_model_package(tmp_path)
+    weights, code = make_model_package(tmp_path)
     summary = score_dna_variants(
         variants_path=variants,
         reference_path=reference,
@@ -450,7 +383,6 @@ def test_centered_only_scoring_needs_no_gtf_or_gene_margin(tmp_path: Path) -> No
         model_dir=weights,
         model_code_dir=code,
         output_dir=tmp_path / "output",
-        manifest_path=manifest,
         window_length=128,
         min_variant_margin=1024,  # ignored without gene-aware planning
         device="cpu",
@@ -463,7 +395,3 @@ def test_centered_only_scoring_needs_no_gtf_or_gene_margin(tmp_path: Path) -> No
     assert rows[0]["gene_context_status"] == "not_requested"
     assert rows[0]["window_length"] == "128"
     assert rows[0]["gene_score"] == ""
-    metadata = json.loads(summary.metadata_path.read_text())
-    assert metadata["run_identity"]["genes"] is None
-    assert metadata["run_identity"]["gene_context_mode"] == "centered_only"
-    assert metadata["counts"]["filtered_invalid_alt_candidates"] == 1

@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import bz2
-import csv
 import gzip
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from vep_comparisons.saprot_recovery import (
+from vep_comparisons.protein.recovery.alphafold import (
+    AlphaFoldClient,
     AlphaFoldModel,
+    select_exact_model,
+)
+from vep_comparisons.protein.recovery.foldseek import recover_tokens
+from vep_comparisons.protein.recovery.workflow import (
     MismatchCandidate,
     RecoveryError,
-    RecoveryRunner,
     merge_tokens,
     read_fasta,
     read_mismatch_candidates,
-    select_exact_model,
 )
 
 
@@ -83,7 +85,6 @@ def test_read_mismatch_candidates_enriches_from_translation(tmp_path: Path) -> N
     result = read_mismatch_candidates(mismatches, translations)
 
     assert result == [candidate()]
-    assert result[0].md5 == "0f38398d1cd9331fe888bcb1948035cc"
 
 
 def test_read_mismatch_candidates_rejects_sequence_disagreement(
@@ -122,7 +123,7 @@ def test_read_mismatch_candidates_combines_multiple_accession_mappings(
 
 
 def test_select_exact_model_requires_unique_full_length_monomer() -> None:
-    selected, status, _ = select_exact_model(
+    selected = select_exact_model(
         candidate(),
         [
             model(entry="canonical", sequence="MABCD"),
@@ -131,27 +132,24 @@ def test_select_exact_model_requires_unique_full_length_monomer() -> None:
         ],
     )
     assert selected == model()
-    assert status == "selected_exact"
 
-    selected, status, _ = select_exact_model(
+    selected = select_exact_model(
         candidate(), [model(entry="first"), model(entry="second")]
     )
     assert selected is None
-    assert status == "ambiguous_exact_match"
 
 
 def test_select_exact_model_reports_fragment_only() -> None:
-    selected, status, _ = select_exact_model(
+    selected = select_exact_model(
         candidate("MABCDEFG"), [model(sequence="ABCDE", start=2, end=6)]
     )
     assert selected is None
-    assert status == "fragment_only"
 
 
 def test_discovery_uses_uniprot_fallback_only_when_needed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = RecoveryRunner(output_dir=tmp_path)
+    client = AlphaFoldClient(pdb_dir=tmp_path / "pdb")
     calls: list[str] = []
     base = {
         "modelEntityId": "AF-P52569-F1",
@@ -174,7 +172,7 @@ def test_discovery_uses_uniprot_fallback_only_when_needed(
         "pdbUrl": "https://example.test/isoform.pdb",
     }
 
-    def fake_cached_json(path: Path, url: str, **_: object) -> object:
+    def fake_request_json(url: str, **_: object) -> object:
         calls.append(url)
         if "uniprotkb" in url:
             return {
@@ -187,10 +185,9 @@ def test_discovery_uses_uniprot_fallback_only_when_needed(
             }
         return [exact] if url.endswith("P52569-3") else [base]
 
-    monkeypatch.setattr(runner, "_cached_json", fake_cached_json)
-    models, errors = runner._discover_accession("P52569", [candidate()])
+    monkeypatch.setattr(client, "_request_json", fake_request_json)
+    models = client._discover_accession("P52569", [candidate()])
 
-    assert errors == []
     assert [item.model_entity_id for item in models] == [
         "AF-P52569-F1",
         "AF-P52569-3-F1",
@@ -198,28 +195,26 @@ def test_discovery_uses_uniprot_fallback_only_when_needed(
     assert any("uniprotkb" in call for call in calls)
 
 
-def test_discovery_rejects_exact_match_when_enumeration_was_incomplete(
+def test_discovery_skips_accession_when_enumeration_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runner = RecoveryRunner(output_dir=tmp_path)
+    client = AlphaFoldClient(pdb_dir=tmp_path / "pdb")
     monkeypatch.setattr(
-        runner,
+        client,
         "_discover_accession",
-        lambda accession, candidates: ([model()], ["one isoform request failed"]),
+        lambda accession, candidates: (_ for _ in ()).throw(RuntimeError("failed")),
     )
 
-    selected, manifest = runner.discover([candidate()])
+    selected = client.discover([candidate()])
 
     assert selected == {}
-    assert manifest[candidate().transcript]["status"] == "discovery_failed"
 
 
 def test_foldseek_validation_writes_lowercase_tokens(tmp_path: Path) -> None:
-    runner = RecoveryRunner(output_dir=tmp_path)
-    runner.pdb_dir.mkdir()
+    pdb_dir = tmp_path / "pdb"
+    pdb_dir.mkdir()
     selected_model = model()
     downloaded = {candidate().transcript: selected_model}
-    manifest = {candidate().transcript: {"status": "selected_exact", "reason": ""}}
 
     def fake_run(
         command: list[str], **_: object
@@ -231,49 +226,45 @@ def test_foldseek_validation_writes_lowercase_tokens(tmp_path: Path) -> None:
         )
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    recovered = runner.run_foldseek(
+    recovered = recover_tokens(
         downloaded,
-        manifest,
+        pdb_dir=pdb_dir,
+        descriptor_path=tmp_path / "foldseek.tsv",
         foldseek="foldseek",
         threads=8,
         run_command=fake_run,
     )
 
     assert recovered == {candidate().transcript: "qwerty"}
-    assert manifest[candidate().transcript]["status"] == "recovered_exact"
 
 
 def test_download_accepts_an_empty_selection_without_creating_pdb_dir(
     tmp_path: Path,
 ) -> None:
-    runner = RecoveryRunner(output_dir=tmp_path)
+    client = AlphaFoldClient(pdb_dir=tmp_path / "pdb")
 
-    assert runner.download({}, {}) == {}
-    assert not runner.pdb_dir.exists()
+    assert client.download({}) == {}
+    assert not client.pdb_dir.exists()
 
 
 @pytest.mark.parametrize(
-    ("rows", "expected_status"),
+    "rows",
     [
-        ([], "foldseek_missing_descriptor"),
-        (
-            [
-                "AF-P52569-3-F1_A\tMABCDE\tQWERTY",
-                "AF-P52569-3-F1_B\tMABCDE\tQWERTY",
-            ],
-            "foldseek_multiple_descriptors",
-        ),
-        (["AF-P52569-3-F1_A\tMABCDF\tQWERTY"], "foldseek_sequence_mismatch"),
-        (["AF-P52569-3-F1_A\tMABCDE\tQWERT"], "foldseek_sequence_mismatch"),
+        [],
+        [
+            "AF-P52569-3-F1_A\tMABCDE\tQWERTY",
+            "AF-P52569-3-F1_B\tMABCDE\tQWERTY",
+        ],
+        ["AF-P52569-3-F1_A\tMABCDF\tQWERTY"],
+        ["AF-P52569-3-F1_A\tMABCDE\tQWERT"],
     ],
 )
 def test_foldseek_rejects_invalid_descriptors(
-    tmp_path: Path, rows: list[str], expected_status: str
+    tmp_path: Path, rows: list[str]
 ) -> None:
-    runner = RecoveryRunner(output_dir=tmp_path)
-    runner.pdb_dir.mkdir()
+    pdb_dir = tmp_path / "pdb"
+    pdb_dir.mkdir()
     transcript = candidate().transcript
-    manifest = {transcript: {"status": "selected_exact", "reason": ""}}
 
     def fake_run(
         command: list[str], **_: object
@@ -281,16 +272,16 @@ def test_foldseek_rejects_invalid_descriptors(
         Path(command[-1]).write_text("\n".join(rows), encoding="utf-8")
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    recovered = runner.run_foldseek(
+    recovered = recover_tokens(
         {transcript: model()},
-        manifest,
+        pdb_dir=pdb_dir,
+        descriptor_path=tmp_path / "foldseek.tsv",
         foldseek="foldseek",
         threads=1,
         run_command=fake_run,
     )
 
     assert recovered == {}
-    assert manifest[transcript]["status"] == expected_status
 
 
 def test_merge_tokens_validates_lengths_and_refuses_replacement(tmp_path: Path) -> None:
@@ -320,15 +311,3 @@ def test_merge_tokens_validates_lengths_and_refuses_replacement(tmp_path: Path) 
             translations_path=translations,
             output_path=output,
         )
-
-
-def test_manifest_has_one_row_per_candidate(tmp_path: Path) -> None:
-    runner = RecoveryRunner(output_dir=tmp_path)
-    row = runner._manifest_row(candidate(), model(), "selected_exact", "selected")
-    path = runner.write_manifest({candidate().transcript: row})
-
-    with path.open() as handle:
-        records = list(csv.DictReader(handle, delimiter="\t"))
-    assert len(records) == 1
-    assert records[0]["transcript_version"] == "ENST00000004531.7"
-    assert records[0]["plddt_mask_policy"].startswith("none")

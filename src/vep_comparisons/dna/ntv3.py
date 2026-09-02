@@ -8,19 +8,15 @@ import sys
 import types
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
 
-from .dna_variant_scoring import (
-    DnaModel,
+from .inputs import ReferenceGenome
+from .windows import (
     OrientationScores,
-    ReferenceGenome,
     ScoringContext,
     complemented,
     extract_window,
     reverse_complement,
-    sha256_file,
 )
-
 
 EXPECTED_WEIGHT_FILES = ("config.json", "model.safetensors", "tokenizer_config.json", "vocab.json")
 EXPECTED_CODE_FILES = (
@@ -43,60 +39,22 @@ EXPECTED_VOCABULARY = {
 }
 
 
-class ModelPackageError(ValueError):
-    pass
-
-
-def _validated_file_hashes(
-    directory: Path, expected_names: Sequence[str], manifest_hashes: Mapping[str, str], label: str
-) -> dict[str, str]:
-    missing_manifest = sorted(set(expected_names) - set(manifest_hashes))
-    if missing_manifest:
-        raise ModelPackageError(f"model manifest is missing {label} hashes: {missing_manifest}")
-    hashes: dict[str, str] = {}
+def _require_files(directory: Path, expected_names: Sequence[str], label: str) -> None:
     for name in expected_names:
         path = directory / name
         if not path.is_file():
-            raise ModelPackageError(f"missing {label} file: {path}")
-        if manifest_hashes[name] == "GATED_SNAPSHOT_REQUIRED":
-            raise ModelPackageError(
-                "the checked-in manifest still needs hashes from the gated "
-                f"NTv3 code snapshot ({name})"
-            )
-        hashes[name] = sha256_file(path)
-        if hashes[name] != manifest_hashes[name]:
-            raise ModelPackageError(
-                f"{label} hash mismatch for {path}: expected {manifest_hashes[name]}, got {hashes[name]}"
-            )
-    return hashes
+            raise ValueError(f"missing {label} file: {path}")
 
 
-def validate_model_package(
-    model_dir: Path, model_code_dir: Path, manifest_path: Path
-) -> dict[str, Any]:
-    """Verify revisions, every executable source file, config, and token IDs."""
+def validate_model_package(model_dir: Path, model_code_dir: Path) -> None:
+    """Check the files and model assumptions required for correct inference."""
 
-    if not manifest_path.is_file():
-        raise ModelPackageError(f"model manifest not found: {manifest_path}")
-    manifest = json.loads(manifest_path.read_text())
-    try:
-        weights = manifest["weights"]
-        code = manifest["code"]
-        expected = manifest["expected"]
-    except KeyError as error:
-        raise ModelPackageError(f"model manifest is missing {error.args[0]!r}") from error
-    for label, section in (("weights", weights), ("code", code)):
-        revision = section.get("revision")
-        if not isinstance(revision, str) or len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
-            raise ModelPackageError(f"{label} revision must be a pinned 40-character lowercase git SHA")
-    weight_hashes = _validated_file_hashes(
-        model_dir, EXPECTED_WEIGHT_FILES, weights.get("sha256", {}), "weight"
-    )
-    code_hashes = _validated_file_hashes(
-        model_code_dir, EXPECTED_CODE_FILES, code.get("sha256", {}), "code"
-    )
+    _require_files(model_dir, EXPECTED_WEIGHT_FILES, "weight")
+    _require_files(model_code_dir, EXPECTED_CODE_FILES, "code")
     if not (model_code_dir / "__init__.py").is_file():
-        raise ModelPackageError(f"missing code package initializer: {model_code_dir / '__init__.py'}")
+        raise ValueError(
+            f"missing code package initializer: {model_code_dir / '__init__.py'}"
+        )
 
     config = json.loads((model_dir / "config.json").read_text())
     vocabulary = json.loads((model_dir / "vocab.json").read_text())
@@ -116,47 +74,18 @@ def validate_model_package(
         "pad_token_id": EXPECTED_VOCABULARY["<pad>"],
         "vocabulary": EXPECTED_VOCABULARY,
     }
-    manifest_wanted = {
-        "alphabet_size": expected.get("alphabet_size"),
-        "num_downsamples": expected.get("num_downsamples"),
-        "token_ids": expected.get("token_ids"),
-    }
     if checks != wanted:
-        raise ModelPackageError(f"NTv3 config/vocabulary mismatch: observed={checks!r}")
-    if manifest_wanted != {
-        "alphabet_size": 11,
-        "num_downsamples": 7,
-        "token_ids": EXPECTED_VOCABULARY,
-    }:
-        raise ModelPackageError("model manifest expected-token/config section is invalid")
-    return {
-        "model": manifest.get("model"),
-        "manifest_path": str(manifest_path.resolve()),
-        "manifest_sha256": sha256_file(manifest_path),
-        "weights": {
-            "path": str(model_dir.resolve()),
-            "repository": weights.get("repository"),
-            "revision": weights["revision"],
-            "sha256": weight_hashes,
-        },
-        "code": {
-            "path": str(model_code_dir.resolve()),
-            "repository": code.get("repository"),
-            "revision": code["revision"],
-            "sha256": code_hashes,
-        },
-        "token_ids": {key: EXPECTED_VOCABULARY[key] for key in "ATCGN"},
-    }
+        raise ValueError(f"NTv3 config/vocabulary mismatch: observed={checks!r}")
 
 
-def _load_code_package(code_dir: Path):
+def _load_code_package(code_dir: Path) -> types.ModuleType:
     """Create an isolated package without executing unpinned ``__init__.py``."""
 
     package_name = "_vep_comparisons_pinned_ntv3"
     existing = sys.modules.get(package_name)
     if existing is not None:
         if Path(existing.__file__).resolve().parent != code_dir.resolve():
-            raise ModelPackageError("a different NTv3 code snapshot is already loaded")
+            raise ValueError("a different NTv3 code snapshot is already loaded")
         return existing
     package = types.ModuleType(package_name)
     package.__file__ = str(code_dir / "__init__.py")
@@ -166,35 +95,34 @@ def _load_code_package(code_dir: Path):
     return package
 
 
-def _torch_dtype(name: str):
+def _torch_dtype(name: str) -> object:
     import torch
 
     return {"float32": torch.float32, "bfloat16": torch.bfloat16}[name]
 
 
-class NTv3Model(DnaModel):
+class NTv3Model:
     """Masked-marginal NTv3 scorer using only validated local files."""
 
     def __init__(
         self,
         model_dir: Path,
         model_code_dir: Path,
-        manifest_path: Path,
         *,
         device: str,
         dtype: str,
     ) -> None:
         import torch
 
-        validate_model_package(model_dir, model_code_dir, manifest_path)
+        validate_model_package(model_dir, model_code_dir)
         _load_code_package(model_code_dir)
         package_name = "_vep_comparisons_pinned_ntv3"
         configuration = importlib.import_module(f"{package_name}.configuration_ntv3_pretrained")
         tokenization = importlib.import_module(f"{package_name}.tokenization_ntv3")
         modeling = importlib.import_module(f"{package_name}.modeling_ntv3_pretrained")
-        config_class = getattr(configuration, "Ntv3PreTrainedConfig")
-        tokenizer_class = getattr(tokenization, "NTv3Tokenizer")
-        model_class = getattr(modeling, "NTv3PreTrained")
+        config_class = configuration.Ntv3PreTrainedConfig
+        tokenizer_class = tokenization.NTv3Tokenizer
+        model_class = modeling.NTv3PreTrained
 
         config = config_class.from_pretrained(model_dir, local_files_only=True)
         self.tokenizer = tokenizer_class.from_pretrained(model_dir, local_files_only=True)
@@ -207,7 +135,7 @@ class NTv3Model(DnaModel):
         ).to(device=self.device).eval()
         vocabulary = self.tokenizer.get_vocab()
         if vocabulary != EXPECTED_VOCABULARY:
-            raise ModelPackageError(f"runtime tokenizer vocabulary mismatch: {vocabulary!r}")
+            raise ValueError(f"runtime tokenizer vocabulary mismatch: {vocabulary!r}")
         self.token_ids = {base: vocabulary[base] for base in "ATCGN"}
         self.mask_token_id = vocabulary["<mask>"]
 

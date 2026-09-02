@@ -89,7 +89,6 @@ def _(dataset_dir, selected_variants):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell
@@ -126,7 +125,6 @@ def _(dataset_dir, vep_variants):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell(hide_code=True)
@@ -166,7 +164,6 @@ def _(mo):
       --output-prefix "${dataset_dir}/final_variants"
     ```
     """)
-    return
 
 
 if __name__ == "__main__":

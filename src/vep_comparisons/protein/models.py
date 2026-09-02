@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-
 STANDARD_AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 FOLDSEEK_ALPHABET = "pynwrqhgdlvtmfsaeikc#"
 
@@ -127,7 +126,7 @@ def marginalized_log_odds_from_logits(
     return float((alt - ref).item())
 
 
-def _torch_dtype(name: str):
+def _torch_dtype(name: str) -> object:
     import torch
 
     return {

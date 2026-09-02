@@ -12,7 +12,6 @@ def _():
     import marimo as mo
     import polars as pl
     import polars.selectors as cs
-    import seaborn as sns
 
     return Path, cs, mo, os, pl
 
@@ -114,7 +113,6 @@ def _(mo):
         - Do the other data match (e.g. chromomosome, pos, ref, alt)?
     - For variants not shared between datasets, just want to concat
     """)
-    return
 
 
 @app.cell
@@ -279,7 +277,6 @@ def _(
 @app.cell
 def _(validation):
     validation
-    return
 
 
 @app.cell
@@ -297,13 +294,11 @@ def _(cs, curr_variants, data_paths, pl):
         .sort("n_variants", descending=True)
     )
     overlap
-    return
 
 
 @app.cell
 def _(curr_variants):
     curr_variants.head()
-    return
 
 
 @app.cell
@@ -336,7 +331,6 @@ def _(cs, curr_variants, data_paths, pl, positive_labels):
         .sort("n_variants", descending=True)
     )
     overlap_pos_only
-    return
 
 
 @app.cell
@@ -349,6 +343,5 @@ def _(curr_variants, pl):
         .get_column("eqtl_label")
         .value_counts()
     )
-    return
 if __name__ == "__main__":
     app.run()

@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from vep_comparisons.dna_variant_scoring import InputValidationError, ShardCompatibilityError
-from vep_comparisons.orthrus_scoring import (
+from vep_comparisons.dna.workflow import InputValidationError, ShardCompatibilityError
+from vep_comparisons.rna.orthrus.workflow import (
     OUTPUT_COLUMNS,
     ComponentScores,
     OrthrusCandidate,
@@ -25,9 +25,7 @@ from vep_comparisons.orthrus_scoring import (
     read_orthrus_candidates,
     read_transcript_annotations,
     score_orthrus_variants,
-    sha256_file,
     shard_candidates,
-    shard_paths,
     validate_orthrus_checkpoint,
 )
 
@@ -100,7 +98,7 @@ def write_annotations(tmp_path: Path) -> tuple[Path, Path]:
     return fasta, gff
 
 
-def make_checkpoint(tmp_path: Path) -> tuple[Path, Path]:
+def make_checkpoint(tmp_path: Path) -> Path:
     checkpoint = tmp_path / "checkpoint"
     checkpoint.mkdir()
     config = {
@@ -111,43 +109,7 @@ def make_checkpoint(tmp_path: Path) -> tuple[Path, Path]:
     (checkpoint / "config.json").write_text(json.dumps(config))
     (checkpoint / "model.safetensors").write_bytes(b"fake weights")
     (checkpoint / "orthrus_hf.py").write_text("# fake code\n")
-    subprocess.run(["git", "init", "-q", str(checkpoint)], check=True)
-    subprocess.run(["git", "-C", str(checkpoint), "add", "."], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(checkpoint),
-            "-c",
-            "user.name=Test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-qm",
-            "checkpoint",
-        ],
-        check=True,
-    )
-    revision = subprocess.run(
-        ["git", "-C", str(checkpoint), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    files = ("config.json", "model.safetensors", "orthrus_hf.py")
-    manifest = tmp_path / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "model": "orthrus-mlm-6-track",
-                "repository": "test/orthrus",
-                "revision": revision,
-                "sha256": {name: sha256_file(checkpoint / name) for name in files},
-                "expected": config,
-            }
-        )
-    )
-    return checkpoint, manifest
+    return checkpoint
 
 
 def test_gff_projection_tracks_both_strands_and_lnc(tmp_path: Path) -> None:
@@ -204,19 +166,15 @@ def test_eligibility_coordinate_conversion_and_minus_complement(tmp_path: Path) 
         read_orthrus_candidates(malformed)
 
 
-def test_ref_and_coordinate_mismatches_fail_together(tmp_path: Path) -> None:
+def test_ref_and_coordinate_mismatches_fail_immediately(tmp_path: Path) -> None:
     fasta, gff = write_annotations(tmp_path)
     annotations = read_transcript_annotations(gff, fasta, {"ENSTPLUS"})
     rows = [
         OrthrusCandidate("wrong-pos", "ENSG1", "ENSTPLUS", "chr1", 101, 102, 3, "G", "A", 0),
         OrthrusCandidate("wrong-ref", "ENSG1", "ENSTPLUS", "chr1", 102, 103, 3, "C", "A", 1),
     ]
-    with pytest.raises(InputValidationError) as caught:
+    with pytest.raises(InputValidationError, match="cdna_genomic_position_mismatch"):
         prepare_requests(rows, annotations)
-    assert {issue.category for issue in caught.value.issues} == {
-        "cdna_genomic_position_mismatch",
-        "transcript_reference_mismatch",
-    }
 
 
 def test_mask_preserves_cds_and_splice_and_prefix_full_are_causal_equivalent() -> None:
@@ -291,10 +249,10 @@ class FakeScorer:
         }
 
 
-def test_checkpoint_scoring_resume_collation_and_tamper_rejection(tmp_path: Path) -> None:
+def test_checkpoint_scoring_and_collation(tmp_path: Path) -> None:
     fasta, gff = write_annotations(tmp_path)
-    checkpoint, manifest = make_checkpoint(tmp_path)
-    assert validate_orthrus_checkpoint(checkpoint, manifest)["repository"] == "test/orthrus"
+    checkpoint = make_checkpoint(tmp_path)
+    validate_orthrus_checkpoint(checkpoint)
     variants = tmp_path / "variants.tsv.gz"
     write_variants(
         variants,
@@ -318,7 +276,6 @@ def test_checkpoint_scoring_resume_collation_and_tamper_rejection(tmp_path: Path
             transcript_fasta_path=fasta,
             gff3_path=gff,
             checkpoint=checkpoint,
-            manifest_path=manifest,
             output_dir=output_dir,
             num_shards=2,
             shard_index=index,
@@ -328,27 +285,12 @@ def test_checkpoint_scoring_resume_collation_and_tamper_rejection(tmp_path: Path
         )
         assert summary.rows == 1
     assert [scorer.batch_sizes for scorer in scorers] == [[32], [32]]
-    reused = score_orthrus_variants(
-        variants_path=variants,
-        transcript_fasta_path=fasta,
-        gff3_path=gff,
-        checkpoint=checkpoint,
-        manifest_path=manifest,
-        output_dir=output_dir,
-        num_shards=2,
-        shard_index=0,
-        device="cpu",
-        model_factory=lambda *args: (_ for _ in ()).throw(AssertionError("loaded")),
-    )
-    assert reused.reused
-
     final = tmp_path / "final.tsv.gz"
     collate_orthrus_scores(
         variants_path=variants,
         transcript_fasta_path=fasta,
         gff3_path=gff,
         checkpoint=checkpoint,
-        manifest_path=manifest,
         output_dir=output_dir,
         output_path=final,
         num_shards=2,
@@ -358,29 +300,10 @@ def test_checkpoint_scoring_resume_collation_and_tamper_rejection(tmp_path: Path
     assert tuple(rows[0]) == OUTPUT_COLUMNS
     assert [row["variant"] for row in rows] == ["first", "later"]
     assert float(rows[0]["score"]) == pytest.approx(0.75)
-    metadata = json.loads(final.with_suffix(".json").read_text())
-    assert metadata["ineligible_counts"] == {"missing_cdna_position": 1}
-    assert "runtime_seconds" not in metadata
-    assert "command" not in metadata
-
-    shard_output, _ = shard_paths(output_dir, 2, 1)
-    with gzip.open(shard_output, "at") as handle:
-        handle.write("tampered\n")
-    with pytest.raises(ShardCompatibilityError, match="checksum"):
-        collate_orthrus_scores(
-            variants_path=variants,
-            transcript_fasta_path=fasta,
-            gff3_path=gff,
-            checkpoint=checkpoint,
-            manifest_path=manifest,
-            output_dir=output_dir,
-            output_path=final,
-            num_shards=2,
-        )
 
 
-def test_checkpoint_hash_and_six_track_validation(tmp_path: Path) -> None:
-    checkpoint, manifest = make_checkpoint(tmp_path)
-    (checkpoint / "orthrus_hf.py").write_text("changed\n")
-    with pytest.raises(ValueError, match="hash mismatch"):
-        validate_orthrus_checkpoint(checkpoint, manifest)
+def test_checkpoint_six_track_validation(tmp_path: Path) -> None:
+    checkpoint = make_checkpoint(tmp_path)
+    (checkpoint / "config.json").write_text(json.dumps({"n_tracks": 5}))
+    with pytest.raises(ValueError, match="six tracks"):
+        validate_orthrus_checkpoint(checkpoint)

@@ -6,9 +6,8 @@ readme = "README.md"
 authors = [
     { name = "Robert Calef", email = "robert.calef@gmail.com" }
 ]
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
-    "esm>=3.2.3",
     "jupyter>=1.1.1",
     "marimo>=0.23.16",
     "matplotlib>=3.11.1",
@@ -21,15 +20,21 @@ dependencies = [
     "pysam>=0.24.0",
     "seaborn>=0.13.2",
     "statsmodels>=0.14.6",
-    "torch>=2.6.0",
+    "torch==2.6.0",
     "tqdm>=4.67.1",
-    "transformers>=4.48.1",
+]
+
+[project.optional-dependencies]
+protein-models = [
+    "esm==3.2.3",
+    "transformers==4.48.1",
+]
+ntv3 = [
+    "transformers @ git+https://github.com/huggingface/transformers.git@v4.55.4",
 ]
 
 [project.scripts]
-curate-vep-variants = "vep_comparisons.cli:main"
-score-protein-variants = "vep_comparisons.score_variants_cli:main"
-recover-saprot-structures = "vep_comparisons.saprot_recovery_cli:main"
+vep-comparisons = "vep_comparisons.cli:main"
 
 [dependency-groups]
 dev = [
@@ -39,3 +44,12 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+conflicts = [
+    [
+        { extra = "protein-models" },
+        { extra = "ntv3" },
+    ],
+]

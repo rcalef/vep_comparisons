@@ -6,7 +6,6 @@ app = marimo.App()
 
 @app.cell
 def _():
-    import gzip
 
     from pathlib import Path
 
@@ -31,7 +30,6 @@ def _(mo):
     mo.md(r"""
     # Prepare ClinVar variants
     """)
-    return
 
 
 @app.cell
@@ -114,13 +112,11 @@ def _(mo):
     - Select variants with "normal" significance status
         - Select for variants that are at least likely benign or likely pathogenic, and VUS (i.e. exclude the weird categories).
     """)
-    return
 
 
 @app.cell
 def _(parsed_clinvar):
     parsed_clinvar.get_column("CLNREVSTAT").value_counts(sort=True)
-    return
 
 
 @app.cell
@@ -191,7 +187,6 @@ def _(filtered_clinvar):
         .fill_null(0)
         .select(["label"]+ list(map(str, range(2, 5))))
     )
-    return
 
 
 @app.cell
@@ -205,7 +200,6 @@ def _(dataset_dir, filtered_clinvar):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell
@@ -242,7 +236,6 @@ def _(dataset_dir, vep_variants):
             compression="gzip",
         )
     )
-    return
 
 
 @app.cell(hide_code=True)
@@ -250,7 +243,6 @@ def _(mo):
     mo.md(r"""
     # Parse VEP results
     """)
-    return
 
 
 @app.cell(hide_code=True)
@@ -279,7 +271,6 @@ def _(mo):
     ```
     annotations were sourced using the version 115 of the GRCh38 cache (i.e. GENCODE 49).
     """)
-    return
 
 
 @app.cell(hide_code=True)
@@ -288,7 +279,6 @@ def _(mo):
     ## Initial parsing
     Parsing out the "Extra" string which contains key-value pairs of additional outputs, filtering to only hits to canonical transcripts, and removing `upstream_gene_variant` and `downstream_gene_variant` hits.
     """)
-    return
 
 
 @app.cell
@@ -298,7 +288,6 @@ def _(parsed_vep_path):
             "Initial parsing file already exists, are you sure you want to rerun? "
             "Parsing from original file requires ~90GB of memory due to large size of the file (~12M rows)."
         )
-    return
 
 
 @app.cell
@@ -326,49 +315,41 @@ def _(pd, pl, vep_path):
 @app.cell
 def _(df_4):
     len(df_4['Gene'].unique())
-    return
 
 
 @app.cell
 def _(df_4, pl):
     len(df_4.filter(pl.col('CANONICAL') == 'YES')['Feature'].unique())
-    return
 
 
 @app.cell
 def _(df_4, pl):
     df_4.filter(pl.col('BIOTYPE') == 'lncRNA')
-    return
 
 
 @app.cell
 def _(df_4, pl):
     df_4.filter(pl.col('BIOTYPE') == 'lncRNA').select(pl.col('cDNA_position').value_counts(sort=True))
-    return
 
 
 @app.cell
 def _(df_4, pl):
     df_4.select(pl.col('BIOTYPE').value_counts(sort=True)).unnest('BIOTYPE')
-    return
 
 
 @app.cell
 def _(df_4, pl):
     df_4.filter(pl.col('CANONICAL') == 'YES').select(pl.col('BIOTYPE').value_counts(sort=True)).unnest('BIOTYPE')
-    return
 
 
 @app.cell
 def _(df_4):
     df_4['#Uploaded_variation'].unique()
-    return
 
 
 @app.cell
 def _(df_4, pl):
     df_4.select(pl.col('CANONICAL').value_counts(sort=True)).unnest('CANONICAL')
-    return
 
 
 @app.cell
@@ -381,7 +362,6 @@ def _(df_4, pl):
 @app.cell
 def _(canonical, pl):
     canonical.select(pl.col("Consequence").value_counts(sort=True)).unnest("Consequence")
-    return
 
 
 @app.cell(hide_code=True)
@@ -389,7 +369,6 @@ def _(mo):
     mo.md(r"""
     For now, we'll remove `downstream_gene_variant` and `upstream_gene_variant`, since these are just defined as variants that are within 5kb of the 5' or 3' end of a gene, and it seems like many variants are annotated with these in additon to transcripts that they actually fall into. In the future, we can try to be a bit more stringent and only remove these entries for variants that do actually fall into another transcript (i.e. keep rows where the upstream/downstream is the only prediction for that variant).
     """)
-    return
 
 
 @app.cell
@@ -402,19 +381,16 @@ def _(canonical, pl):
 @app.cell
 def _(canonical_1):
     canonical_1.head()
-    return
 
 
 @app.cell
 def _(canonical_1, pl):
     canonical_1.filter(pl.col('BIOTYPE') == 'lncRNA').select(pl.col('cDNA_position').value_counts(sort=True))
-    return
 
 
 @app.cell
 def _(canonical_1, pl):
     canonical_1.filter(pl.col('BIOTYPE') == 'lncRNA')
-    return
 
 
 @app.cell
@@ -428,7 +404,6 @@ def _(canonical_1, pl):
 @app.cell
 def _(initial_vars, parsed_vep_path):
     initial_vars.write_csv(parsed_vep_path, separator="\t", compression="gzip")
-    return
 
 
 @app.cell(hide_code=True)
@@ -436,7 +411,6 @@ def _(mo):
     mo.md(r"""
     ## Explore selected variants
     """)
-    return
 
 
 @app.cell
@@ -462,7 +436,6 @@ def _(filt_tsv_path, pl):
 @app.cell
 def _(clinvar_annot):
     assert len(clinvar_annot) == len(clinvar_annot["id"].unique())
-    return
 
 
 @app.cell
@@ -475,13 +448,11 @@ def _(clinvar_annot, initial_vars_1):
 @app.cell
 def _(merged, pl):
     len(merged.filter(pl.col("clnsig") != "Uncertain_significance"))
-    return
 
 
 @app.cell
 def _(merged):
     merged.head()
-    return
 
 
 @app.cell
@@ -492,19 +463,16 @@ def _(merged):
         .fill_null(0)
         .head(10)
     )
-    return
 
 
 @app.cell
 def _(merged, pl):
     merged.select(pl.col("consequence").str.split(",").explode().value_counts(sort=True)).unnest("consequence")
-    return
 
 
 @app.cell
 def _(merged, pl):
     merged.select(pl.col("clnsig").value_counts(sort=True)).unnest("clnsig")
-    return
 
 
 @app.cell
@@ -577,13 +545,11 @@ def _(pd, pl, sns):
 @app.cell
 def _(make_consequence_plot, merged):
     make_consequence_plot(merged, silent_only=False)
-    return
 
 
 @app.cell
 def _(make_consequence_plot, merged):
     make_consequence_plot(merged)
-    return
 
 
 @app.cell(hide_code=True)
@@ -591,7 +557,6 @@ def _(mo):
     mo.md(r"""
     To be very conservative, we'll remove any variant whose consequence could be one of the "coding" type that we've defined above.
     """)
-    return
 
 
 @app.cell
@@ -630,25 +595,21 @@ def _(merged, pl, want_1):
 @app.cell
 def _(silent_vars):
     len(silent_vars["id"].unique())
-    return
 
 
 @app.cell
 def _(pl, silent_vars):
     silent_vars.filter(pl.col("id").is_duplicated())
-    return
 
 
 @app.cell
 def _(pl, silent_vars):
     silent_vars.select(pl.col("clnsig").value_counts(sort=True)).unnest("clnsig")
-    return
 
 
 @app.cell
 def _(make_consequence_plot, silent_vars):
     make_consequence_plot(silent_vars)
-    return
 
 
 @app.cell
@@ -659,7 +620,6 @@ def _(pl, silent_vars):
         .select(pl.col("consequence").str.split(",").explode().value_counts(sort=True)).unnest("consequence")
         .head(n=10)
     )
-    return
 
 
 @app.cell
@@ -669,13 +629,11 @@ def _(pl, silent_vars):
         .filter(pl.col("clnsig").str.contains("athogenic") & pl.col("consequence").str.contains("synonymous"))
         .head(n=10)
     )
-    return
 
 
 @app.cell
 def _(silent_vars, silent_vars_path):
     silent_vars.write_csv(silent_vars_path, separator="\t", compression="gzip")
-    return
 
 
 @app.cell
@@ -688,13 +646,11 @@ def _(pd):
 @app.cell
 def _(parsed_variants):
     parsed_variants.clnsig.value_counts()
-    return
 
 
 @app.cell
 def _(parsed_variants):
     len(parsed_variants)
-    return
 
 
 @app.cell
@@ -706,7 +662,6 @@ def _(pd, silent_vars_path):
 @app.cell
 def _(silent_vars_1):
     silent_vars_1.clnsig.value_counts()
-    return
 
 
 @app.cell
@@ -719,7 +674,6 @@ def _(silent_vars_1):
 @app.cell
 def _(ben_vars):
     ben_vars.consequence.value_counts()
-    return
 
 
 @app.cell
@@ -746,7 +700,6 @@ def _(ben_vars, benign_downsample_categories, pd):
 @app.cell
 def _(ben_vars_downsampled):
     ben_vars_downsampled.consequence.value_counts()
-    return
 
 
 @app.cell
@@ -766,37 +719,31 @@ def _(ben_vars_downsampled, path_vars, pd):
 @app.cell
 def _(clinvar_variants_dir, downsampled_vars):
     downsampled_vars.to_csv(clinvar_variants_dir / "silent_variants_effects.downsampled.txt.gz", sep="\t", index=False)
-    return
 
 
 @app.cell
 def _(path_vars):
     path_vars.consequence.value_counts()
-    return
 
 
 @app.cell
 def _(path_vars):
     path_vars.consequence.value_counts()
-    return
 
 
 @app.cell
 def _(path_vars):
     path_vars.query("consequence == 'non_coding_transcript_exon_variant'")
-    return
 
 
 @app.cell
 def _(path_vars):
     path_vars.query("consequence == 'non_coding_transcript_exon_variant'").biotype.value_counts()
-    return
 
 
 @app.cell
 def _(path_vars):
     path_vars.query("consequence == 'non_coding_transcript_exon_variant' and biotype == 'lncRNA'")
-    return
 
 
 if __name__ == "__main__":

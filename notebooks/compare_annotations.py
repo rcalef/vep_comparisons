@@ -16,11 +16,8 @@ def _():
     import matplotlib.pyplot as plt
     import numpy as np
     import polars as pl
-    import polars.selectors as cs
     import seaborn as sns
-    from sklearn.ensemble import HistGradientBoostingClassifier
     from sklearn.linear_model import (
-        LogisticRegression,
         LogisticRegressionCV,
     )
     from sklearn.metrics import (
@@ -28,7 +25,6 @@ def _():
         roc_auc_score,
     )
     from sklearn.model_selection import (
-        GridSearchCV,
         StratifiedGroupKFold,
         cross_val_predict,
     )
@@ -88,7 +84,6 @@ def _(pl, variants_path):
 @app.cell
 def _(df):
     df.head()
-    return
 
 
 @app.cell(hide_code=True)
@@ -96,7 +91,6 @@ def _(mo):
     mo.md(r"""
     ## Raw annotation comparisons
     """)
-    return
 
 
 @app.cell
@@ -226,19 +220,16 @@ def _(df, pl, plt, roc_auc_score, sns):
 @app.cell
 def _(df, raw_score_comparison):
     raw_score_comparison(df, dataset="ukbb", high_pip=0.5, low_pip=0.1)
-    return
 
 
 @app.cell
 def _(df, raw_score_comparison):
     raw_score_comparison(df, dataset="multisusie", high_pip=0.5, low_pip=0.1)
-    return
 
 
 @app.cell
 def _(df, raw_score_comparison):
     raw_score_comparison(df, dataset="eqtl", high_pip=0.5, low_pip=0.1)
-    return
 
 
 @app.cell
@@ -251,7 +242,6 @@ def _(df, raw_score_comparison):
         pos_name="pathogenic",
         neg_name="benign",
     )
-    return
 
 
 @app.cell
@@ -303,7 +293,6 @@ def _(normed, pl):
         .get_column("gnocchi_only")
         .mean()
     )
-    return
 
 
 @app.cell(hide_code=True)
@@ -327,7 +316,6 @@ def _(mo):
     available labels must be low PIP. Quantiles and normalization are recomputed
     within every dataset/biotype group.
     """)
-    return
 
 
 @app.cell
@@ -517,7 +505,6 @@ def _(dataset_specs, eval_all_datasets, model_specs):
         want_biotypes=["all"],
         model_specs=model_specs
     )
-    return
 
 
 @app.cell
@@ -670,7 +657,6 @@ def _(auroc_diffs, pl):
             mid=pl.col("auroc_diff").median(),
         )
     )
-    return
 
 
 @app.cell
@@ -683,7 +669,6 @@ def _(all_results, plt, sns):
     )
     _ = plt.ylim(0.5)
     plt.show()
-    return
 
 
 @app.cell
@@ -694,7 +679,6 @@ def _(all_results, sns):
         hue="features",
         data=all_results,
     )
-    return
 
 
 @app.cell
@@ -705,7 +689,6 @@ def _(auroc_diffs, sns):
         data=auroc_diffs,
         errorbar=("pi", 95)
     )
-    return
 
 
 @app.cell
@@ -915,7 +898,6 @@ def _(
     The original normalized scatter makes the niche look larger because it plots only
     high-PIP variants; low-PIP variants set the normalization but are not shown.
     """)
-    return
 
 
 @app.cell(hide_code=True)
@@ -923,7 +905,6 @@ def _(mo):
     mo.md(r"""
     ## ESM-C scores
     """)
-    return
 
 
 @app.cell
@@ -948,7 +929,6 @@ def _(pl):
 @app.cell
 def _(esmc_scores):
     esmc_scores.get_column("score").is_not_null().value_counts()
-    return
 
 
 @app.cell
@@ -963,7 +943,6 @@ def _(df, esmc_scores):
 @app.cell
 def _(merged):
     merged.head()
-    return
 
 
 @app.cell
@@ -992,7 +971,6 @@ def _(clinvar_check, pl, roc_auc_score):
         y_true=(clinvar_check.get_column("label") == "pos").cast(pl.UInt8).to_numpy(),
         y_score=(clinvar_check.get_column("score")).to_numpy()
     )
-    return
 
 
 @app.cell
@@ -1002,7 +980,6 @@ def _(merged):
     for ds in datasets:
         print(ds)
         print(merged.get_column(f"{ds}_label").value_counts())
-    return
 
 
 @app.cell
@@ -1121,7 +1098,6 @@ def _(pl, roc_auc_score, sns):
 @app.cell
 def _(merged, score_comparison):
     score_comparison(merged, all_non_null=False, biotypes=["protein_coding"])
-    return
 
 
 if __name__ == "__main__":

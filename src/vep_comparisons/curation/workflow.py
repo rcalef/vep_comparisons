@@ -1,12 +1,10 @@
-"""Command-line curation of selected variants annotated by Ensembl VEP."""
+"""Curation of selected variants annotated by Ensembl VEP."""
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 import polars as pl
-
 
 REQUIRED_SELECTED_COLUMNS = (
     "variant",
@@ -257,53 +255,23 @@ def report(
         print(counts)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Curate selected variants from tabular Ensembl VEP output."
-    )
-    parser.add_argument("--vep-output", required=True, type=Path)
-    parser.add_argument("--selected-variants", required=True, type=Path)
-    parser.add_argument(
-        "--has-target-genes",
-        required=False,
-        default=False,
-        action="store_true",
-    )
-    parser.add_argument("--output-prefix", required=True, type=Path)
-    parser.add_argument(
-        "--neg-labels",
-        type=str,
-        default=None,
-        action="append",
-        metavar="LABEL",
-        help=(
-            "label to downsample; repeat for multiple negative labels "
-            "(default: low_pip)"
-        ),
-    )
-    parser.add_argument(
-        "--neg-fraction",
-        type=float,
-        default=0.1,
-        help="fraction of unique negative variants retained per biotype (default: 0.1)",
-    )
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args(argv)
-    if args.neg_labels is None:
-        args.neg_labels = ["low_pip"]
-    return args
-
-
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-
-    selected = pl.read_csv(args.selected_variants, separator="\t", has_header=True)
+def curate_variants(
+    *,
+    vep_output: Path,
+    selected_variants: Path,
+    output_prefix: Path,
+    has_target_genes: bool = False,
+    neg_labels: list[str] | None = None,
+    neg_fraction: float = 0.1,
+    seed: int = 42,
+) -> tuple[Path, Path]:
+    selected = pl.read_csv(selected_variants, separator="\t", has_header=True)
     # Selecting these columns makes Polars report any missing canonical columns.
     _ = selected.select(REQUIRED_SELECTED_COLUMNS)
 
-    vep = read_vep(args.vep_output)
+    vep = read_vep(vep_output)
 
-    if args.has_target_genes:
+    if has_target_genes:
         target_genes = selected.select("variant", "target_gene")
         # If we're filtering to target genes, then some variants may not
         # be present in the filtered `annotations` due to not
@@ -333,7 +301,7 @@ def main(argv: list[str] | None = None) -> None:
         maintain_order="left",
         **join_args,
     )
-    if args.has_target_genes:
+    if has_target_genes:
         # `coalesce=False` preserves the VEP `gene` key, which we need in the
         # output, but it also retains a duplicate right-hand `variant` key.
         joined = joined.drop("variant_right")
@@ -342,19 +310,19 @@ def main(argv: list[str] | None = None) -> None:
     downsampled = sort_variants(
         downsample(
             full,
-            neg_labels=args.neg_labels,
-            neg_fraction=args.neg_fraction,
-            seed=args.seed,
+            neg_labels=neg_labels or ["low_pip"],
+            neg_fraction=neg_fraction,
+            seed=seed,
         )
     )
 
-    full_path = Path(f"{args.output_prefix}.tsv.gz")
+    full_path = Path(f"{output_prefix}.tsv.gz")
     (
         full
         .write_csv(full_path, separator="\t", compression="gzip", null_value="-")
     )
 
-    downsampled_path = Path(f"{args.output_prefix}.downsampled.tsv.gz")
+    downsampled_path = Path(f"{output_prefix}.downsampled.tsv.gz")
     (
         downsampled
         .write_csv(downsampled_path, separator="\t", compression="gzip", null_value="-")
@@ -364,7 +332,4 @@ def main(argv: list[str] | None = None) -> None:
     report("filtered for protein-coding and lncRNA", annotations)
     report("full", full, report_pip_by_biotype=True)
     report("downsampled", downsampled, report_pip_by_biotype=True)
-
-
-if __name__ == "__main__":
-    main()
+    return full_path, downsampled_path
