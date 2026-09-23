@@ -1,3 +1,5 @@
+from types import ModuleType
+
 import marimo
 
 __generated_with = "0.23.9"
@@ -49,12 +51,19 @@ def _(dataset_dir, pl):
 
 
 @app.cell
-def _(pl, variants):
-    # Keep SNVs passing the author-provided filters and retain the maximum-PIP
-    # row when a variant was flagged by multiple methods or for multiple traits.
+def select_trait_variants(
+    dataset_dir: "Path", pl: ModuleType, variants: "pl.DataFrame"
+) -> "tuple[pl.DataFrame]":
+    # Restrict traits before selecting the maximum PIP across methods/traits.
+    # Otherwise an excluded trait can determine the variant's label.
+    want_traits = pl.read_csv(
+        dataset_dir / "UKBB_94traits_release1.traits.filtered",
+        separator="\t",
+    ).get_column("trait")
     pass_variants = (
         variants
         .filter(
+            pl.col("trait").is_in(want_traits.to_list()),
             (pl.col("allele1").str.len_chars() == 1),
             (pl.col("allele2").str.len_chars() == 1),
             ~pl.col("LD_SV"),
