@@ -1,8 +1,9 @@
 # VEP comparisons
 
-This repository supports the analyses presented in the paper *Beyond
-Conservation: Biological Language Models Poorly Capture Human-specific
-Variation*. It contains the workflows used to prepare variant datasets, score
+This repository supports the analyses our work focused on whether prevailing
+language models capture deep evolutionary conservation and human mutational 
+constraint, and what the consequences may be for human variant effect prediction
+performance. It contains the workflows used to prepare variant datasets, score
 variants with biological language models, add genomic annotations, and produce
 the paper's analyses and figures.
 
