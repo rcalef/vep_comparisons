@@ -22,6 +22,9 @@ dependencies = [
     "statsmodels>=0.14.6",
     "torch==2.6.0",
     "tqdm>=4.67.1",
+    "scikit-learn==1.9.0",
+    "joblib==1.5.3",
+    "threadpoolctl==3.6.0",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +34,15 @@ protein-models = [
 ]
 ntv3 = [
     "transformers @ git+https://github.com/huggingface/transformers.git@v4.55.4",
+]
+evo = [
+#    "nvidia-pyindex",
+#    "nvidia-cudnn",
+#    "transformer_engine[pytorch]",
+    "ninja",
+    "wheel",
+    "flash-attn",
+    "evo2",
 ]
 
 [project.scripts]
@@ -53,3 +65,9 @@ conflicts = [
         { extra = "ntv3" },
     ],
 ]
+no-build-isolation-package = ["transformer-engine", "flash-attn"]
+# FlashAttention's build backend can download a wheel even when uv uses an sdist.
+no-binary-package = ["flash-attn"]
+
+[tool.uv.extra-build-variables]
+flash-attn = { FLASH_ATTENTION_FORCE_BUILD = "TRUE" }

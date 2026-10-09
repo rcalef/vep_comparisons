@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from ..common import ComponentScores, PreparedRequest, candidate_sort_key
 
 WEIGHTS_FILENAME = "rinalmo_giga_pretrained.pt"
@@ -71,7 +73,7 @@ def select_transcript_window(length: int, target_index: int) -> TranscriptWindow
     return min(choices, key=lambda item: item[0])[1]
 
 
-def build_masked_tokens(
+def build_reference_tokens(
     request: PreparedRequest,
 ) -> tuple[list[int], TranscriptWindow]:
     window = select_transcript_window(
@@ -89,6 +91,11 @@ def build_masked_tokens(
     expected = TOKEN_IDS.get(request.transcript_ref)
     if expected is None or tokens[window.target_token_index] != expected:
         raise RuntimeError(f"masked-token alignment mismatch for {request.key!r}")
+    return tokens, window
+
+
+def build_masked_tokens(request: PreparedRequest) -> tuple[list[int], TranscriptWindow]:
+    tokens, window = build_reference_tokens(request)
     tokens[window.target_token_index] = TOKEN_IDS["<mask>"]
     return tokens, window
 
@@ -146,6 +153,37 @@ class RiNALMoModel:
         state = torch.load(weights_path, map_location="cpu", weights_only=True)
         self.model.load_state_dict(state, strict=True)
         self.model.to(self.device, dtype=self.dtype).eval()
+
+    def embed_requests(
+        self, requests: Sequence[PreparedRequest], *, batch_size: int,
+    ) -> Mapping[tuple[Any, ...], np.ndarray]:
+        """Final transformer vectors; reuse each identical unmasked crop."""
+        assert batch_size > 0
+        torch = self._torch
+        grouped: dict[tuple[str, int, int], list[tuple[PreparedRequest, TranscriptWindow]]] = {}
+        for request in requests:
+            window = select_transcript_window(len(request.annotation.sequence), request.candidate.target_index)
+            key = (request.candidate.feature, window.start, window.end)
+            grouped.setdefault(key, []).append((request, window))
+        groups = sorted(grouped.values(), key=lambda group: group[0][1].token_count)
+        result = {}
+        for offset in range(0, len(groups), batch_size):
+            batch = groups[offset : offset + batch_size]
+            tokens = [build_reference_tokens(group[0][0])[0] for group in batch]
+            inputs = torch.full(
+                (len(batch), max(map(len, tokens))), TOKEN_IDS["<pad>"],
+                dtype=torch.long, device=self.device,
+            )
+            for row, sequence in enumerate(tokens):
+                inputs[row, :len(sequence)] = torch.tensor(sequence, device=self.device)
+            with torch.inference_mode():
+                hidden = self.model(inputs)["representation"]
+                for row, group in enumerate(batch):
+                    positions = [window.target_token_index for _, window in group]
+                    vectors = hidden[row, positions].float().cpu().numpy()
+                    for (request, _), vector in zip(group, vectors, strict=True):
+                        result[request.key] = vector
+        return result
 
     def score_requests(
         self,
@@ -218,6 +256,6 @@ class RiNALMoModel:
 
 __all__ = [
     "MAX_MODEL_TOKENS", "RiNALMoModel", "RiNALMoScore", "SUPPORTED_DTYPES",
-    "TOKEN_IDS", "TOKENS", "TranscriptWindow", "build_masked_tokens",
+    "TOKEN_IDS", "TOKENS", "TranscriptWindow", "build_masked_tokens", "build_reference_tokens",
     "select_transcript_window", "validate_rinalmo_checkpoint",
 ]

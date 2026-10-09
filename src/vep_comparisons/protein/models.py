@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import numpy as np
+
 STANDARD_AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 FOLDSEEK_ALPHABET = "pynwrqhgdlvtmfsaeikc#"
 
@@ -87,6 +89,19 @@ class VariantModel(Protocol):
         batch_size: int,
     ) -> Mapping[tuple[str, int, int], Mapping[str, float]]:
         """Return an amino-acid log score for each requested position."""
+
+    def embed_positions(
+        self, requests: Sequence[PositionRequest], *, batch_size: int,
+    ) -> Mapping[tuple[str, int, int], np.ndarray]:
+        """Return unmasked final contextual vectors for requested positions."""
+
+
+def group_windows(requests: Sequence[PositionRequest]) -> list[list[PositionRequest]]:
+    """Group focal positions that share the same transcript window."""
+    grouped: dict[tuple[str, int], list[PositionRequest]] = {}
+    for request in requests:
+        grouped.setdefault((request.transcript, request.window_start), []).append(request)
+    return sorted(grouped.values(), key=lambda group: len(group[0].sequence))
 
 
 def batch_requests(
@@ -179,6 +194,29 @@ class ESMCVariantModel:
         vocabulary = tokenizer.get_vocab()
         self.aa_token_ids = {aa: vocabulary[aa] for aa in STANDARD_AMINO_ACIDS}
 
+    def embed_positions(
+        self, requests: Sequence[PositionRequest], *, batch_size: int,
+    ) -> Mapping[tuple[str, int, int], np.ndarray]:
+        """Post-normalization transformer output, before sequence_head."""
+        import torch
+
+        assert batch_size > 0
+        groups = group_windows(requests)
+        result = {}
+        for offset in range(0, len(groups), batch_size):
+            batch = groups[offset : offset + batch_size]
+            tokens = self.tokenizer(
+                [group[0].sequence for group in batch], return_tensors="pt", padding=True,
+            )["input_ids"].to(self.device)
+            with torch.inference_mode():
+                hidden = self.model(tokens).embeddings
+                for row, group in enumerate(batch):
+                    # One-based local_position already includes the BOS offset.
+                    vectors = hidden[row, [r.local_position for r in group]].float().cpu().numpy()
+                    for request, vector in zip(group, vectors, strict=True):
+                        result[request.key] = vector
+        return result
+
     def score_positions(
         self,
         requests: Sequence[PositionRequest],
@@ -240,7 +278,7 @@ class SaProtVariantModel:
             for aa in STANDARD_AMINO_ACIDS
         }
 
-    def _combined_sequence(self, request: PositionRequest) -> str:
+    def _combined_sequence(self, request: PositionRequest, *, mask_target: bool = True) -> str:
         if request.structure_tokens is None:
             raise ValueError("SaProt requires structure tokens")
         parts = []
@@ -249,10 +287,32 @@ class SaProtVariantModel:
         ):
             parts.append(
                 f"#{structure}"
-                if index == request.local_position
+                if mask_target and index == request.local_position
                 else f"{aa}{structure}"
             )
         return "".join(parts)
+
+    def embed_positions(
+        self, requests: Sequence[PositionRequest], *, batch_size: int,
+    ) -> Mapping[tuple[str, int, int], np.ndarray]:
+        """Final ESM encoder vectors with intact amino-acid/structure tokens."""
+        import torch
+
+        assert batch_size > 0
+        groups = group_windows(requests)
+        result = {}
+        for offset in range(0, len(groups), batch_size):
+            batch = groups[offset : offset + batch_size]
+            sequences = [self._combined_sequence(group[0], mask_target=False) for group in batch]
+            tokens = self.tokenizer(sequences, return_tensors="pt", padding=True)
+            inputs = {name: tensor.to(self.device) for name, tensor in tokens.items()}
+            with torch.inference_mode():
+                hidden = self.model.esm(**inputs, return_dict=True).last_hidden_state
+                for row, group in enumerate(batch):
+                    vectors = hidden[row, [r.local_position for r in group]].float().cpu().numpy()
+                    for request, vector in zip(group, vectors, strict=True):
+                        result[request.key] = vector
+        return result
 
     def score_positions(
         self,

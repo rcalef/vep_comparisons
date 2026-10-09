@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from math import exp
 
+import numpy as np
+
 from .inputs import Candidate
 from .models import PositionRequest
 
@@ -129,7 +131,28 @@ def aggregate_position_scores(
     return result
 
 
+def aggregate_position_embeddings(
+    requests: Sequence[PositionRequest],
+    window_embeddings: Mapping[tuple[str, int, int], np.ndarray],
+    sequences: Mapping[str, str],
+    *,
+    window_length: int,
+) -> dict[tuple[str, int], np.ndarray]:
+    """Apply the zero-shot workflow's normalized window weights to vectors."""
+    sums: dict[tuple[str, int], np.ndarray] = {}
+    weights: dict[tuple[str, int], float] = {}
+    for request in requests:
+        key = (request.transcript, request.position)
+        weight = sigmoid_window_weight(
+            request, protein_length=len(sequences[request.transcript]), window_length=window_length,
+        )
+        vector = weight * window_embeddings[request.key]
+        sums[key] = sums[key] + vector if key in sums else vector
+        weights[key] = weights.get(key, 0.0) + weight
+    return {key: vector / weights[key] for key, vector in sums.items()}
+
+
 __all__ = [
-    "aggregate_position_scores", "build_position_requests",
+    "aggregate_position_scores", "aggregate_position_embeddings", "build_position_requests",
     "sigmoid_window_weight", "tile_window_starts",
 ]

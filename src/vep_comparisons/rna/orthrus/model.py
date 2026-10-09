@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from ..common import ComponentScores, PreparedRequest, TranscriptAnnotation, candidate_sort_key
 
 NUCLEOTIDES = "ACGT"
@@ -20,12 +22,13 @@ def build_six_track_input(
     target_index: int,
     *,
     prefix_only: bool = True,
+    mask_target: bool = True,
 ) -> list[list[float]]:
     end = target_index + 1 if prefix_only else len(annotation.sequence)
     result: list[list[float]] = []
     for index, base in enumerate(annotation.sequence[:end]):
         row = [0.0] * 6
-        if index != target_index and base in NUCLEOTIDE_INDEX:
+        if (not mask_target or index != target_index) and base in NUCLEOTIDE_INDEX:
             row[NUCLEOTIDE_INDEX[base]] = 1.0
         row[4] = float(annotation.cds_track[index])
         row[5] = float(annotation.splice_track[index])
@@ -68,6 +71,40 @@ class OrthrusModel:
             raise ValueError(
                 "Orthrus checkpoint must have six tracks and a four-class MLM head"
             )
+
+    def embed_requests(
+        self, requests: Sequence[PreparedRequest], *, batch_size: int,
+    ) -> Mapping[tuple[Any, ...], np.ndarray]:
+        """Unmasked transcript prefixes; forward returns norm_f before the MLM head."""
+        assert batch_size > 0
+        torch = self._torch
+        grouped: dict[tuple[str, int], list[PreparedRequest]] = {}
+        for request in requests:
+            key = (request.candidate.feature, request.candidate.target_index)
+            grouped.setdefault(key, []).append(request)
+        groups = sorted(grouped.values(), key=lambda group: group[0].candidate.target_index)
+        result = {}
+        for offset in range(0, len(groups), batch_size):
+            batch = groups[offset : offset + batch_size]
+            lengths = torch.tensor(
+                [group[0].candidate.target_index + 1 for group in batch], device=self.device,
+            )
+            inputs = torch.zeros((len(batch), int(lengths.max()), 6), device=self.device)
+            for row, group in enumerate(batch):
+                request = group[0]
+                array = build_six_track_input(
+                    request.annotation, request.candidate.target_index, mask_target=False,
+                )
+                inputs[row, :len(array)] = torch.tensor(array, device=self.device)
+            with torch.inference_mode():
+                # The pinned causal Mamba forward ignores lengths; right padding
+                # cannot affect earlier positions. Retain the prefix policy.
+                hidden = self.model(inputs, lengths=lengths, channel_last=True)
+                vectors = hidden[torch.arange(len(batch), device=self.device), lengths - 1].float().cpu().numpy()
+            for group, vector in zip(batch, vectors, strict=True):
+                for request in group:
+                    result[request.key] = vector
+        return result
 
     def score_requests(
         self,

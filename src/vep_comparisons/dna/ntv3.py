@@ -9,6 +9,8 @@ import types
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+import numpy as np
+
 from .inputs import ReferenceGenome
 from .windows import (
     OrientationScores,
@@ -138,6 +140,51 @@ class NTv3Model:
             raise ValueError(f"runtime tokenizer vocabulary mismatch: {vocabulary!r}")
         self.token_ids = {base: vocabulary[base] for base in "ATCGN"}
         self.mask_token_id = vocabulary["<mask>"]
+
+    def _embed_batch(
+        self, sequences: Sequence[str], targets: Sequence[int],
+    ) -> np.ndarray:
+        """Final per-base deconvolution output, before the LM head's GELU.
+
+        The pinned Core.forward appends the final upsampling output (including
+        its skip connection) last in hidden_states, with layout (batch, base,
+        conv_init_embed_dim). No special tokens or masking are applied.
+        """
+        import torch
+
+        tokenized = self.tokenizer(
+            list(sequences), add_special_tokens=False, padding=False,
+            return_tensors="pt",
+        )
+        inputs = {name: tensor.to(self.device) for name, tensor in tokenized.items()}
+        with torch.inference_mode():
+            output = self.model(**inputs, output_hidden_states=True)
+            hidden = output.hidden_states[-1]
+            assert hidden.shape[:2] == (len(sequences), len(sequences[0]))
+            rows = torch.arange(len(sequences), device=self.device)
+            positions = torch.tensor(targets, device=self.device)
+            return hidden[rows, positions].float().cpu().numpy()
+
+    def embed_contexts(
+        self,
+        contexts: Sequence[ScoringContext],
+        *,
+        reference: ReferenceGenome,
+        batch_size: int,
+    ) -> np.ndarray:
+        """Unmasked forward/RC averages, in the supplied context order."""
+        batches = []
+        for start in range(0, len(contexts), batch_size):
+            batch = contexts[start : start + batch_size]
+            sequences: list[str] = []
+            targets: list[int] = []
+            for context in batch:
+                forward = extract_window(reference, context)
+                sequences.extend((forward, reverse_complement(forward)))
+                targets.extend((context.target_index, context.window_length - 1 - context.target_index))
+            vectors = self._embed_batch(sequences, targets)
+            batches.append((vectors[0::2] + vectors[1::2]) / 2)
+        return np.concatenate(batches)
 
     def _score_batch(
         self,
