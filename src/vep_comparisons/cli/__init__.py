@@ -37,6 +37,7 @@ def _run_curate(args: argparse.Namespace) -> None:
         selected_variants=args.selected_variants,
         output_prefix=args.output_prefix,
         has_target_genes=args.has_target_genes,
+        region=args.region,
         neg_labels=args.neg_labels,
         neg_fraction=args.neg_fraction,
         seed=args.seed,
@@ -93,6 +94,7 @@ def _run_dna_score(args: argparse.Namespace) -> None:
         genes_path=args.genes,
         model_dir=args.model_dir,
         model_code_dir=args.model_code_dir,
+        checkpoint=args.checkpoint,
         output_dir=args.output_dir,
         model_name=args.model,
         window_length=args.window_length,
@@ -192,6 +194,7 @@ def build_parser() -> argparse.ArgumentParser:
     curate.add_argument("--vep-output", required=True, type=Path)
     curate.add_argument("--selected-variants", required=True, type=Path)
     curate.add_argument("--has-target-genes", action="store_true")
+    curate.add_argument("--region", choices=("transcribed", "outside-transcripts"), default="transcribed")
     curate.add_argument("--output-prefix", required=True, type=Path)
     curate.add_argument("--neg-labels", action="append")
     curate.add_argument("--neg-fraction", type=float, default=0.1)
@@ -232,18 +235,21 @@ def build_parser() -> argparse.ArgumentParser:
     dna = domains.add_parser("dna")
     dna_commands = dna.add_subparsers(dest="dna_command", required=True)
     dna_score = dna_commands.add_parser("score")
-    dna_score.add_argument("--model", choices=("ntv3-100m-pre", "ntv3-650m-pre"), default="ntv3-100m-pre")
+    dna_score.add_argument("--model", choices=("ntv3-100m-pre", "ntv3-650m-pre", "evo2-7b"), default="ntv3-100m-pre")
     dna_score.add_argument("--variants", required=True, type=Path)
     dna_score.add_argument("--reference", required=True, type=Path)
     dna_score.add_argument("--genes", type=Path)
-    dna_score.add_argument("--model-dir", required=True, type=Path)
-    dna_score.add_argument("--model-code-dir", required=True, type=Path)
+    dna_score.add_argument("--model-dir", type=Path)
+    dna_score.add_argument("--model-code-dir", type=Path)
+    dna_score.add_argument("--checkpoint", type=Path)
     dna_score.add_argument("--output-dir", required=True, type=Path)
     dna_score.add_argument("--window-length", type=int, default=8192)
     dna_score.add_argument("--min-variant-margin", type=int, default=1024)
-    dna_score.add_argument("--batch-size", type=_positive, default=1)
+    dna_score.add_argument("--batch-size", type=_positive, default=1,
+                           help="Evo2: maximum sequences per forward pass; NTv3: contexts per batch")
     dna_score.add_argument("--device", default="cuda")
-    dna_score.add_argument("--dtype", choices=("float32", "bfloat16"), default="float32")
+    dna_score.add_argument("--dtype", choices=("float32", "bfloat16"),
+                           help="defaults to bfloat16 for Evo2 and float32 for NTv3")
     _shards(dna_score)
     dna_score.set_defaults(handler=_run_dna_score)
     dna_collate = dna_commands.add_parser("collate")
@@ -292,6 +298,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         if args.retries < 0:
             parser.error("--retries must be nonnegative")
     if args.domain == "dna" and args.dna_command == "score":
+        if args.model == "evo2-7b":
+            if args.checkpoint is None:
+                parser.error("--checkpoint is required for Evo2")
+            if args.model_dir is not None or args.model_code_dir is not None:
+                parser.error("Evo2 uses --checkpoint rather than --model-dir/--model-code-dir")
+            if args.dtype not in (None, "bfloat16"):
+                parser.error("Evo2 uses Vortex's native bfloat16/float32 precision policy")
+        else:
+            if args.model_dir is None or args.model_code_dir is None:
+                parser.error("--model-dir and --model-code-dir are required for NTv3")
+            if args.checkpoint is not None:
+                parser.error("--checkpoint is only used for Evo2")
+        args.dtype = args.dtype or ("bfloat16" if args.model == "evo2-7b" else "float32")
         if args.window_length <= 0 or args.window_length % 128:
             parser.error("--window-length must be positive and divisible by 128")
         if args.genes is not None and not 0 <= args.min_variant_margin < args.window_length / 2:

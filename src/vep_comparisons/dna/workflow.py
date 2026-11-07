@@ -40,7 +40,7 @@ from .windows import (
 )
 
 MODEL_NAME = "ntv3-100m-pre"
-SUPPORTED_MODELS = frozenset(("ntv3-100m-pre", "ntv3-650m-pre"))
+SUPPORTED_MODELS = frozenset(("ntv3-100m-pre", "ntv3-650m-pre", "evo2-7b"))
 OUTPUT_COLUMNS = (
     "variant", "gene", "feature", "chromosome", "start", "end", "ref", "alt",
     "model", "window_length", "centered_window_start", "centered_window_end",
@@ -173,21 +173,30 @@ def score_dna_variants(
     variants_path: Path,
     reference_path: Path,
     genes_path: Path | None = None,
-    model_dir: Path,
-    model_code_dir: Path,
+    model_dir: Path | None = None,
+    model_code_dir: Path | None = None,
+    checkpoint: Path | None = None,
     output_dir: Path,
     model_name: str = MODEL_NAME,
     window_length: int = 8192,
     min_variant_margin: int = 1024,
     batch_size: int = 1,
     device: str = "cuda",
-    dtype: str = "float32",
+    dtype: str | None = None,
     num_shards: int = 1,
     shard_index: int = 0,
-    model_factory: ModelFactory = _default_model_factory,
+    model_factory: ModelFactory | None = None,
 ) -> DnaScoringSummary:
     if model_name not in SUPPORTED_MODELS:
         raise ValueError(f"unsupported DNA model: {model_name}")
+    dtype = dtype or ("bfloat16" if model_name == "evo2-7b" else "float32")
+    if model_name == "evo2-7b":
+        if checkpoint is None:
+            raise ValueError("Evo2 requires a checkpoint file")
+        if dtype != "bfloat16":
+            raise ValueError("Evo2 uses Vortex's native bfloat16/float32 precision policy")
+    elif model_dir is None or model_code_dir is None:
+        raise ValueError("NTv3 requires model_dir and model_code_dir")
     validate_window_policy(
         window_length, min_variant_margin if genes_path is not None else 0
     )
@@ -238,9 +247,15 @@ def score_dna_variants(
             include_gene_context=genes_path is not None,
         )
         contexts = deduplicate_contexts(plans)
-        scores = model_factory(
-            model_dir, model_code_dir, device, dtype
-        ).score_contexts(contexts, reference=reference, batch_size=batch_size)
+        if model_name == "evo2-7b":
+            from .evo2 import Evo2Model
+
+            model = Evo2Model(checkpoint, device=device, dtype=dtype)
+        else:
+            model = (model_factory or _default_model_factory)(
+                model_dir, model_code_dir, device, dtype,
+            )
+        scores = model.score_contexts(contexts, reference=reference, batch_size=batch_size)
         expected_contexts = {context.key for context in contexts}
         if set(scores) != expected_contexts:
             missing = list(expected_contexts - set(scores))

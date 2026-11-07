@@ -12,7 +12,7 @@ from typing import Protocol, TextIO
 
 NUCLEOTIDES = frozenset("ACGT")
 REQUIRED_COLUMNS = (
-    "variant", "gene", "feature", "chromosome", "start", "end", "ref", "alt",
+    "variant", "chromosome", "start", "end", "ref", "alt",
 )
 
 
@@ -123,8 +123,8 @@ def read_dna_candidates(path: Path) -> list[DnaCandidate]:
             candidates.append(
                 DnaCandidate(
                     row["variant"],
-                    normalize_gene(row["gene"]),
-                    row["feature"],
+                    normalize_gene(row.get("gene") or "") if row.get("gene") != "-" else "",
+                    (row.get("feature") or "") if row.get("feature") != "-" else "",
                     row["chromosome"],
                     start,
                     end,

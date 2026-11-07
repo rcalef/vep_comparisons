@@ -364,7 +364,10 @@ def test_inference_failure_leaves_no_shard_files(tmp_path: Path) -> None:
     assert not output_dir.exists()
 
 
-def test_centered_only_scoring_needs_no_gtf_or_gene_margin(tmp_path: Path) -> None:
+@pytest.mark.parametrize("metadata", ["present", "absent", "null"])
+def test_centered_only_scoring_needs_no_gtf_or_gene_margin(
+    tmp_path: Path, metadata: str,
+) -> None:
     reference = tmp_path / "reference.fa"
     variants = tmp_path / "variants.tsv.gz"
     write_reference(reference, "A" * 200)
@@ -375,6 +378,20 @@ def test_centered_only_scoring_needs_no_gtf_or_gene_margin(tmp_path: Path) -> No
             candidate(60, variant="filtered", alt=".", input_index=1),
         ],
     )
+    if metadata != "present":
+        with gzip.open(variants, "rt") as handle:
+            reader = csv.DictReader(handle, delimiter="\t")
+            fields = list(reader.fieldnames)
+            records = list(reader)
+        if metadata == "absent":
+            fields = [field for field in fields if field not in ("gene", "feature")]
+        with gzip.open(variants, "wt") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t", extrasaction="ignore")
+            writer.writeheader()
+            for record in records:
+                if metadata == "null":
+                    record.update(gene="-", feature="-")
+                writer.writerow(record)
     weights, code = make_model_package(tmp_path)
     summary = score_dna_variants(
         variants_path=variants,
@@ -395,3 +412,13 @@ def test_centered_only_scoring_needs_no_gtf_or_gene_margin(tmp_path: Path) -> No
     assert rows[0]["gene_context_status"] == "not_requested"
     assert rows[0]["window_length"] == "128"
     assert rows[0]["gene_score"] == ""
+
+    if metadata != "present":
+        assert rows[0]["gene"] == ""
+        assert rows[0]["feature"] == ""
+    collated = collate_dna_scores(
+        variants_path=variants, output_dir=tmp_path / "output",
+        output_path=tmp_path / "collated.tsv.gz", num_shards=1,
+    )
+    with gzip.open(collated, "rt") as handle:
+        assert list(csv.DictReader(handle, delimiter="\t")) == rows

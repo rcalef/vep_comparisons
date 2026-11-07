@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import polars as pl
 
@@ -57,6 +58,12 @@ REMOVED_CONSEQUENCES = (
     "downstream_gene_variant",
     "upstream_gene_variant",
     "intron_variant",
+    "intergenic_variant",
+)
+
+OUTSIDE_TRANSCRIPT_CONSEQUENCES = (
+    "downstream_gene_variant",
+    "upstream_gene_variant",
     "intergenic_variant",
 )
 
@@ -165,6 +172,43 @@ def filter_and_select_annotations(
     )
 
 
+def select_outside_transcript_annotations(vep: pl.DataFrame) -> pl.DataFrame:
+    """Require every consequence across all VEP rows to be outside transcripts."""
+    eligible = (
+        vep
+        .with_columns(terms=pl.col("consequence").str.split(","))
+        .group_by("variant")
+        .agg(
+            outside=(
+                pl.col("terms").list.set_difference(OUTSIDE_TRANSCRIPT_CONSEQUENCES).list.len().eq(0)
+                & pl.col("terms").list.len().gt(0)
+            ).fill_null(False).all()
+        )
+        .filter("outside")
+        .select("variant")
+    )
+    # Nearby genes are not overlapped genes. Keep genomic annotations only,
+    # with one annotation record per variant, independent of transcript ranking.
+    return (
+        vep
+        .join(eligible, on="variant", how="semi")
+        .sort("variant", "consequence")
+        .group_by("variant", maintain_order=True)
+        .agg(
+            pl.col("consequence").str.split(",").explode(empty_as_null=True).unique().sort().str.join(","),
+            *(pl.col(column).drop_nulls().first() for column in (
+                "gnomade_af", "gnomadg_af", "max_af", "max_af_pops"
+            )),
+        )
+        .with_columns(
+            pl.lit(None, dtype=pl.String).alias(column)
+            for column in OUTPUT_ANNOTATION_COLUMNS
+            if column not in {"consequence", "gnomade_af", "gnomadg_af", "max_af", "max_af_pops"}
+        )
+        .select("variant", *OUTPUT_ANNOTATION_COLUMNS)
+    )
+
+
 def sort_variants(frame: pl.DataFrame) -> pl.DataFrame:
     return (
         frame
@@ -184,18 +228,20 @@ def downsample(
     neg_labels: list[str],
     neg_fraction: float,
     seed: int,
+    outside_transcripts: bool = False,
 ) -> pl.DataFrame:
     negative_variants = (
         full
         .filter(pl.col("label").is_in(neg_labels))
-        .select("variant", "biotype")
+        .select("variant", *([] if outside_transcripts else ["biotype"]))
         .unique(maintain_order=True)
-        .sort(["biotype", "variant"])
+        .sort(["variant"] if outside_transcripts else ["biotype", "variant"])
     )
 
     sampled_ids: list[pl.DataFrame] = []
-    biotype_strata = negative_variants.partition_by(
-        "biotype", maintain_order=True
+    biotype_strata = (
+        [negative_variants] if outside_transcripts
+        else negative_variants.partition_by("biotype", maintain_order=True)
     )
     for stratum in biotype_strata:
         sampled_ids.append(
@@ -221,6 +267,9 @@ def downsample(
         )
     )
     positive = full.filter(~pl.col("label").is_in(neg_labels))
+    if outside_transcripts:
+        retained = pl.concat([positive.select("variant"), sampled_negative.select("variant")]).unique()
+        return full.join(retained, on="variant", how="semi")
     return pl.concat([positive, sampled_negative])
 
 
@@ -264,14 +313,29 @@ def curate_variants(
     neg_labels: list[str] | None = None,
     neg_fraction: float = 0.1,
     seed: int = 42,
+    region: Literal["transcribed", "outside-transcripts"] = "transcribed",
 ) -> tuple[Path, Path]:
     selected = pl.read_csv(selected_variants, separator="\t", has_header=True)
     # Selecting these columns makes Polars report any missing canonical columns.
     _ = selected.select(REQUIRED_SELECTED_COLUMNS)
 
+    if has_target_genes and region == "outside-transcripts":
+        # Keep the strongest association and its metadata before sampling.
+        # Target-gene order breaks PIP ties reproducibly.
+        selected = (
+            selected
+            .sort(
+                ["variant", "pip", "target_gene"],
+                descending=[False, True, False],
+                nulls_last=True,
+                maintain_order=True,
+            )
+            .unique("variant", keep="first", maintain_order=True)
+        )
+
     vep = read_vep(vep_output)
 
-    if has_target_genes:
+    if has_target_genes and region == "transcribed":
         target_genes = selected.select("variant", "target_gene")
         # If we're filtering to target genes, then some variants may not
         # be present in the filtered `annotations` due to not
@@ -287,13 +351,14 @@ def curate_variants(
         target_genes = None
         join_args = {
             "on": "variant",
-            "validate": "1:m",
+            "validate": "m:1" if region == "outside-transcripts" else "1:m",
             "coalesce": True,
         }
 
-    annotations = filter_and_select_annotations(
-        vep,
-        target_genes=target_genes,
+    annotations = (
+        select_outside_transcript_annotations(vep)
+        if region == "outside-transcripts"
+        else filter_and_select_annotations(vep, target_genes=target_genes)
     )
     joined = selected.join(
         annotations,
@@ -301,7 +366,7 @@ def curate_variants(
         maintain_order="left",
         **join_args,
     )
-    if has_target_genes:
+    if has_target_genes and region == "transcribed":
         # `coalesce=False` preserves the VEP `gene` key, which we need in the
         # output, but it also retains a duplicate right-hand `variant` key.
         joined = joined.drop("variant_right")
@@ -313,6 +378,7 @@ def curate_variants(
             neg_labels=neg_labels or ["low_pip"],
             neg_fraction=neg_fraction,
             seed=seed,
+            outside_transcripts=region == "outside-transcripts",
         )
     )
 
@@ -329,7 +395,7 @@ def curate_variants(
     )
 
     report("input", vep)
-    report("filtered for protein-coding and lncRNA", annotations)
-    report("full", full, report_pip_by_biotype=True)
-    report("downsampled", downsampled, report_pip_by_biotype=True)
+    report(f"filtered ({region})", annotations)
+    report("full", full, report_pip_by_biotype=region == "transcribed")
+    report("downsampled", downsampled, report_pip_by_biotype=region == "transcribed")
     return full_path, downsampled_path
